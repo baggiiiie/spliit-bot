@@ -236,11 +236,11 @@ def parse_expense_command(text: str) -> Optional[ParsedExpense]:
         return None
 
     # Parse participant names (handle "and", commas)
-    participants_text = re.sub(r"\s+and\s+", ", ", participants_text, flags=re.IGNORECASE)
+    participants_text = re.sub(
+        r"\s+and\s+", ", ", participants_text, flags=re.IGNORECASE
+    )
     participants = [
-        p.strip().lower()
-        for p in participants_text.split(",")
-        if p.strip()
+        p.strip().lower() for p in participants_text.split(",") if p.strip()
     ]
 
     if not participants:
@@ -274,7 +274,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if not is_user_allowed(update.effective_user.id):
-        await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+        await update.message.reply_text(
+            "Sorry, you are not authorized to use this bot."
+        )
         return
 
     welcome_text = """
@@ -331,7 +333,9 @@ async def group_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     if not is_user_allowed(update.effective_user.id):
-        await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+        await update.message.reply_text(
+            "Sorry, you are not authorized to use this bot."
+        )
         return
 
     if not SPLIIT_GROUP_ID:
@@ -369,7 +373,9 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if not is_user_allowed(update.effective_user.id):
-        await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+        await update.message.reply_text(
+            "Sorry, you are not authorized to use this bot."
+        )
         return
 
     if not SPLIIT_GROUP_ID:
@@ -410,13 +416,17 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
-async def add_expense_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def add_expense_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
     """Handle /add command - add a new expense with confirmation."""
     if not update.effective_user or not update.message:
         return
 
     if not is_user_allowed(update.effective_user.id):
-        await update.message.reply_text("Sorry, you are not authorized to use this bot.")
+        await update.message.reply_text(
+            "Sorry, you are not authorized to use this bot."
+        )
         return
 
     if not SPLIIT_GROUP_ID:
@@ -500,7 +510,9 @@ Do you want to add this expense to Spliit?
     # Create inline keyboard for confirmation
     keyboard = [
         [
-            InlineKeyboardButton("Confirm", callback_data=f"confirm_{confirmation_key}"),
+            InlineKeyboardButton(
+                "Confirm", callback_data=f"confirm_{confirmation_key}"
+            ),
             InlineKeyboardButton("Cancel", callback_data=f"cancel_{confirmation_key}"),
         ]
     ]
@@ -527,13 +539,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         expense = pending_confirmations.pop(confirmation_key, None)
 
         if not expense:
-            await query.edit_message_text("This confirmation has expired. Please try again.")
+            await query.edit_message_text(
+                "This confirmation has expired. Please try again."
+            )
             return
 
         # Fetch group to get participant IDs
         group = await spliit_client.get_group()
         if not group:
-            await query.edit_message_text("Failed to fetch group info. Please try again.")
+            await query.edit_message_text(
+                "Failed to fetch group info. Please try again."
+            )
             return
 
         participant_map = {p.name.lower(): p for p in group.participants}
