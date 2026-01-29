@@ -33,6 +33,12 @@ SPLIIT_GROUP_ID = os.getenv("SPLIIT_GROUP_ID", "")
 ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "")
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID", "")
 
+# Webhook configuration
+BOT_MODE = os.getenv("BOT_MODE", "polling").lower()
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
+
 # Initialize Spliit client
 spliit = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
 
@@ -585,8 +591,25 @@ def main() -> None:
     app.add_handler(add_conv_handler)
     app.add_handler(CallbackQueryHandler(button))
 
-    logger.info("Bot starting...")
-    app.run_polling()
+    if BOT_MODE == "webhook":
+        if not WEBHOOK_URL:
+            logger.error("WEBHOOK_URL not set for webhook mode")
+            return
+
+        webhook_path = "/webhook"
+        full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}{webhook_path}"
+
+        logger.info(f"Bot starting in webhook mode on port {WEBHOOK_PORT}...")
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=WEBHOOK_PORT,
+            url_path=webhook_path,
+            webhook_url=full_webhook_url,
+            secret_token=WEBHOOK_SECRET or None,
+        )
+    else:
+        logger.info("Bot starting in polling mode...")
+        app.run_polling()
 
 
 if __name__ == "__main__":
