@@ -5,6 +5,7 @@ import os
 import re
 import json
 import logging
+import html
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from spliit import Spliit
@@ -40,7 +41,7 @@ USERS_JSON_PATH = os.path.join(os.path.dirname(__file__), "users.json")
 with open(USERS_JSON_PATH) as f:
     SPLIIT_TO_TELEGRAM: dict[str, str] = json.load(f)
 
-# Pending confirmations: key -> (title, amount, paid_by_id, paid_for)
+# Pending confirmations: key -> (title, amount, paid_by_id, paid_for, telegram_username)
 pending: dict[str, tuple] = {}
 
 
@@ -277,7 +278,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
     if not expense:
         await update.message.reply_text(
             "Format: `/add $title, $amount, with p1, p2, and p3`"
-            "                                    ↳ first person paid",
+            "↳ first person paid, you need a `with` keyword",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
@@ -312,7 +313,10 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
     key = f"{update.effective_user.id}_{update.message.message_id}"
     amount_cents = int(expense.amount * 100)
     paid_for = [(pid, 1) for _, pid in matched]
-    pending[key] = (expense.title, amount_cents, payer[1], paid_for)
+    tg_name = (
+        update.effective_user.first_name or update.effective_user.username or "unknown"
+    )
+    pending[key] = (expense.title, amount_cents, payer[1], paid_for, tg_name)
 
     share = expense.amount / len(matched)
     keyboard = [
@@ -422,7 +426,12 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
         payee_names = [id_to_name[pid] for pid in selected]
 
         key = f"{update.effective_user.id}_{query.message.message_id}"
-        pending[key] = (title, int(amount * 100), payer_id, paid_for)
+        tg_name = (
+            update.effective_user.first_name
+            or update.effective_user.username
+            or "unknown"
+        )
+        pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_name)
 
         share = amount / len(selected)
         keyboard = [
@@ -487,10 +496,14 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await query.edit_message_text("Expired. Try again.")
             return
 
-        title, amount, paid_by_id, paid_for = info
+        title, amount, paid_by_id, paid_for, tg_name = info
+        expense_title = f"[telebot-{tg_name}] {title}"
         try:
             spliit.add_expense(
-                title=title, paid_by=paid_by_id, paid_for=paid_for, amount=amount
+                title=expense_title,
+                paid_by=paid_by_id,
+                paid_for=paid_for,
+                amount=amount,
             )
             await query.edit_message_text(f"Added: {title}")
 
@@ -526,10 +539,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             amount_display = amount / 100
             share = amount_display / len(payee_names)
             msg = (
-                f"💸 <b>{title}</b> added\n"
-                f"Amount: {currency}{amount_display:.2f}\n"
-                f"Paid by: {payer_name}\n"
-                f"Split ({currency}{share:.2f} each): {', '.join(payee_names)}\n\n"
+                f"💸 <b>{html.escape(title)}</b> added\n"
+                f"Amount: {html.escape(currency)}{amount_display:.2f}\n"
+                f"Paid by: {html.escape(payer_name)}\n"
+                f"Split ({html.escape(currency)}{share:.2f} each): {html.escape(', '.join(payee_names))}\n\n"
                 f"👋 {' '.join(mentions)}"
             )
             await query.message.reply_text(msg, parse_mode="HTML")
