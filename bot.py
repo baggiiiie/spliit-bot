@@ -113,13 +113,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update):
         return
     await update.message.reply_text(
-        "Spliit Bot\n\n"
+        "baggiiiie's Spliit Bot\n\n"
+        "url: https://spliit.app/groups/WF_-cIdW0KrDhsIal1uhI/\n"
         "Commands:\n"
         "/group - Show participants\n"
         "/balance - Show balances\n"
         "/add title, amount, with participants\n\n"
         "Example:\n"
-        "`/add dinner, 80, with john, mary, and tom`",
+        "`/add` (interactive)\n"
+        "`/add $title, $amount` (interactive)\n"
+        "`/add $title, $amount, with baggie, neo, yoga, and ricky`\n"
+        "                             ↳ first person paid",
         parse_mode="Markdown",
     )
 
@@ -266,7 +270,8 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
     expense = parse_add_command(text)
     if not expense:
         await update.message.reply_text(
-            "Format: `/add title, amount, with p1, p2, and p3`",
+            "Format: `/add $title, $amount, with p1, p2, and p3`"
+            "                                    ↳ first person paid",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
