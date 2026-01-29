@@ -7,13 +7,15 @@ import logging
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from spliit import Spliit
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ConversationHandler,
+    MessageHandler,
     ContextTypes,
+    filters,
 )
 
 load_dotenv()
@@ -34,7 +36,7 @@ spliit = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
 pending: dict[str, tuple] = {}
 
 # Conversation states for interactive /add
-PAYER, PAYEES = range(2)
+TITLE, AMOUNT, PAYER, PAYEES = range(4)
 
 
 @dataclass
@@ -207,6 +209,14 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
     text = (update.message.text or "").strip()
 
+    # Check if command has no arguments -> full interactive mode
+    if text in ("/add", "/addbill"):
+        await update.message.reply_text(
+            "Enter expense title:",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
+        )
+        return TITLE
+
     # Check for partial format: /add title, amount (no participants)
     partial = parse_partial_add(text)
     if partial:
@@ -291,6 +301,44 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
     return ConversationHandler.END
+
+
+async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["expense_title"] = update.message.text.strip()
+    await update.message.reply_text(
+        "Enter amount:",
+        reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
+    )
+    return AMOUNT
+
+
+async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    match = re.match(r"(\d+(?:\.\d+)?)", text)
+    if not match:
+        await update.message.reply_text(
+            "Invalid amount. Enter a number:",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
+        )
+        return AMOUNT
+
+    context.user_data["expense_amount"] = float(match.group(1))
+
+    try:
+        participants_map = spliit.get_participants()
+        context.user_data["participants_map"] = participants_map
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
+        return ConversationHandler.END
+
+    keyboard = [
+        [InlineKeyboardButton(name, callback_data=f"payer_{pid}")]
+        for name, pid in participants_map.items()
+    ]
+    await update.message.reply_text(
+        "Who paid?", reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    return PAYER
 
 
 async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -436,6 +484,8 @@ def main() -> None:
             CommandHandler("addbill", add_cmd),
         ],
         states={
+            TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_title)],
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_amount)],
             PAYER: [CallbackQueryHandler(interactive_payer, pattern=r"^payer_")],
             PAYEES: [CallbackQueryHandler(interactive_payees, pattern=r"^payee_")],
         },
