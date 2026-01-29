@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 from spliit import Spliit
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ConversationHandler,
+    ContextTypes,
+)
 
 load_dotenv()
 
@@ -26,6 +32,9 @@ spliit = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
 
 # Pending confirmations: key -> (title, amount, paid_by_id, paid_for)
 pending: dict[str, tuple] = {}
+
+# Conversation states for interactive /add
+PAYER, PAYEES = range(2)
 
 
 @dataclass
@@ -173,24 +182,69 @@ async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Error: {e}")
 
 
-async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+def parse_partial_add(text: str) -> tuple[str, float] | None:
+    """Parse: /add title, amount (without participants)"""
+    text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
+    if not text:
+        return None
+
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 2:
+        return None
+
+    title = parts[0]
+    amount_match = re.match(r"(\d+(?:\.\d+)?)", parts[1].strip())
+    if not amount_match:
+        return None
+
+    return (title, float(amount_match.group(1)))
+
+
+async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
     if not spliit:
         await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
-        return
+        return ConversationHandler.END
 
-    expense = parse_add_command(update.message.text or "")
+    text = (update.message.text or "").strip()
+
+    # Check for partial format: /add title, amount (no participants)
+    partial = parse_partial_add(text)
+    if partial:
+        title, amount = partial
+        context.user_data["expense_title"] = title
+        context.user_data["expense_amount"] = amount
+
+        try:
+            participants_map = spliit.get_participants()
+            context.user_data["participants_map"] = participants_map
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
+            return ConversationHandler.END
+
+        keyboard = [
+            [InlineKeyboardButton(name, callback_data=f"payer_{pid}")]
+            for name, pid in participants_map.items()
+        ]
+        await update.message.reply_text(
+            f"*{title}* - {amount:.2f}\n\nWho paid?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return PAYER
+
+    expense = parse_add_command(text)
     if not expense:
         await update.message.reply_text(
             "Format: `/add title, amount, with p1, p2, and p3`",
             parse_mode="Markdown",
         )
-        return
+        return ConversationHandler.END
 
     try:
         participants_map = spliit.get_participants()
     except Exception as e:
         await update.message.reply_text(f"Error fetching participants: {e}")
-        return
+        return ConversationHandler.END
 
     # Match names (case-insensitive)
     name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
@@ -198,9 +252,9 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     payer = name_map.get(expense.paid_by)
     if not payer:
         await update.message.reply_text(
-            f"Payer '{expense.paid_by}' not found.\nAvailable: {', '.join(participants_map.keys())}"
+            f"whodat? '{expense.paid_by}' not found.\nAvailable: {', '.join(participants_map.keys())}"
         )
-        return
+        return ConversationHandler.END
 
     matched = []
     for name in expense.participants:
@@ -209,7 +263,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text(
                 f"'{name}' not found.\nAvailable: {', '.join(participants_map.keys())}"
             )
-            return
+            return ConversationHandler.END
         matched.append(p)
 
     # Store for confirmation
@@ -236,6 +290,105 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard),
     )
+    return ConversationHandler.END
+
+
+async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    payer_id = query.data[6:]  # Remove "payer_" prefix
+    participants_map = context.user_data["participants_map"]
+    id_to_name = {pid: name for name, pid in participants_map.items()}
+
+    context.user_data["payer_id"] = payer_id
+    context.user_data["payer_name"] = id_to_name[payer_id]
+    context.user_data["selected_payees"] = []
+
+    keyboard = [
+        [InlineKeyboardButton(name, callback_data=f"payee_{pid}")]
+        for name, pid in participants_map.items()
+    ]
+    keyboard.append([InlineKeyboardButton("✓ Done", callback_data="payee_done")])
+
+    await query.edit_message_text(
+        "Select who to split with (tap to toggle, then Done):",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return PAYEES
+
+
+async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    if data == "payee_done":
+        selected = context.user_data.get("selected_payees", [])
+        if not selected:
+            await query.answer("Select at least one person", show_alert=True)
+            return PAYEES
+
+        title = context.user_data["expense_title"]
+        amount = context.user_data["expense_amount"]
+        payer_id = context.user_data["payer_id"]
+        payer_name = context.user_data["payer_name"]
+        participants_map = context.user_data["participants_map"]
+        id_to_name = {pid: name for name, pid in participants_map.items()}
+
+        paid_for = [(pid, 1) for pid in selected]
+        payee_names = [id_to_name[pid] for pid in selected]
+
+        key = f"{update.effective_user.id}_{query.message.message_id}"
+        pending[key] = (title, int(amount * 100), payer_id, paid_for)
+
+        share = amount / len(selected)
+        keyboard = [
+            [
+                InlineKeyboardButton("Confirm", callback_data=f"yes_{key}"),
+                InlineKeyboardButton("Cancel", callback_data=f"no_{key}"),
+            ]
+        ]
+
+        await query.edit_message_text(
+            f"**{title}**\n"
+            f"Amount: {amount:.2f}\n"
+            f"Paid by: {payer_name}\n"
+            f"Split: {', '.join(payee_names)}\n"
+            f"Each: {share:.2f}\n\n"
+            f"Confirm?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return ConversationHandler.END
+
+    # Toggle payee selection
+    payee_id = data[6:]  # Remove "payee_" prefix
+    selected = context.user_data.get("selected_payees", [])
+    if payee_id in selected:
+        selected.remove(payee_id)
+    else:
+        selected.append(payee_id)
+    context.user_data["selected_payees"] = selected
+
+    # Rebuild keyboard with checkmarks
+    participants_map = context.user_data["participants_map"]
+    keyboard = []
+    for name, pid in participants_map.items():
+        mark = "✓ " if pid in selected else ""
+        keyboard.append([InlineKeyboardButton(f"{mark}{name}", callback_data=f"payee_{pid}")])
+    keyboard.append([InlineKeyboardButton("✓ Done", callback_data="payee_done")])
+
+    await query.edit_message_text(
+        "Select who to split with (tap to toggle, then Done):",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return PAYEES
+
+
+async def cancel_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Cancelled.")
+    return ConversationHandler.END
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -276,8 +429,19 @@ def main() -> None:
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("group", group_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
-    app.add_handler(CommandHandler("add", add_cmd))
-    app.add_handler(CommandHandler("addbill", add_cmd))
+
+    add_conv_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("add", add_cmd),
+            CommandHandler("addbill", add_cmd),
+        ],
+        states={
+            PAYER: [CallbackQueryHandler(interactive_payer, pattern=r"^payer_")],
+            PAYEES: [CallbackQueryHandler(interactive_payees, pattern=r"^payee_")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_interactive)],
+    )
+    app.add_handler(add_conv_handler)
     app.add_handler(CallbackQueryHandler(button))
 
     logger.info("Bot starting...")
