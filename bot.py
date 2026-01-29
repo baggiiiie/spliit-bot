@@ -28,12 +28,23 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SPLIIT_GROUP_ID = os.getenv("SPLIIT_GROUP_ID", "")
+ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "")
+ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID", "")
 
 # Initialize Spliit client
 spliit = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
 
 # Pending confirmations: key -> (title, amount, paid_by_id, paid_for)
 pending: dict[str, tuple] = {}
+
+
+def is_allowed_chat(update: Update) -> bool:
+    """Check if the update is from the allowed chat."""
+    return (
+        str(update.effective_chat.id) == ALLOWED_CHAT_ID
+        or str(update.effective_user.id) == ALLOWED_USER_ID
+    )
+
 
 # Conversation states for interactive /add
 TITLE, AMOUNT, PAYER, PAYEES = range(4)
@@ -99,6 +110,8 @@ def parse_add_command(text: str) -> ParsedExpense | None:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_allowed_chat(update):
+        return
     await update.message.reply_text(
         "Spliit Bot\n\n"
         "Commands:\n"
@@ -125,6 +138,8 @@ def get_balances(group_id: str) -> dict:
 
 
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_allowed_chat(update):
+        return
     if not spliit:
         await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
         return
@@ -145,11 +160,11 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             name = id_to_name.get(pid, pid)
             total = data["total"] / 100
             if total > 0:
-                lines.append(f"• {name}: +{currency}{total:.2f}")
+                lines.append(f"- {name}: +{currency}{total:.2f}")
             elif total < 0:
-                lines.append(f"• {name}: {currency}{total:.2f}")
+                lines.append(f"- {name}: {currency}{total:.2f}")
             else:
-                lines.append(f"• {name}: {currency}0.00")
+                lines.append(f"- {name}: {currency}0.00")
 
         # Format suggested reimbursements
         if reimbursements:
@@ -158,7 +173,7 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 from_name = id_to_name.get(r["from"], r["from"])
                 to_name = id_to_name.get(r["to"], r["to"])
                 amount = r["amount"] / 100
-                lines.append(f"• {from_name} → {to_name}: {currency}{amount:.2f}")
+                lines.append(f"- {from_name} -> {to_name}: {currency}{amount:.2f}")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
@@ -167,6 +182,8 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_allowed_chat(update):
+        return
     if not spliit:
         await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
         return
@@ -203,6 +220,8 @@ def parse_partial_add(text: str) -> tuple[str, float] | None:
 
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not is_allowed_chat(update):
+        return ConversationHandler.END
     if not spliit:
         await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
         return ConversationHandler.END
@@ -213,7 +232,9 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
     if text in ("/add", "/addbill"):
         await update.message.reply_text(
             "Enter expense title:",
-            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
+            reply_markup=ForceReply(
+                selective=True, input_field_placeholder="e.g. Dinner"
+            ),
         )
         return TITLE
 
@@ -318,7 +339,9 @@ async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not match:
         await update.message.reply_text(
             "Invalid amount. Enter a number:",
-            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
+            reply_markup=ForceReply(
+                selective=True, input_field_placeholder="e.g. 50.00"
+            ),
         )
         return AMOUNT
 
@@ -357,7 +380,7 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton(name, callback_data=f"payee_{pid}")]
         for name, pid in participants_map.items()
     ]
-    keyboard.append([InlineKeyboardButton("✓ Done", callback_data="payee_done")])
+    keyboard.append([InlineKeyboardButton("< Done >", callback_data="payee_done")])
 
     await query.edit_message_text(
         "Select who to split with (tap to toggle, then Done):",
@@ -424,7 +447,9 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard = []
     for name, pid in participants_map.items():
         mark = "✓ " if pid in selected else ""
-        keyboard.append([InlineKeyboardButton(f"{mark}{name}", callback_data=f"payee_{pid}")])
+        keyboard.append(
+            [InlineKeyboardButton(f"{mark}{name}", callback_data=f"payee_{pid}")]
+        )
     keyboard.append([InlineKeyboardButton("✓ Done", callback_data="payee_done")])
 
     await query.edit_message_text(
@@ -485,7 +510,9 @@ def main() -> None:
         ],
         states={
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_title)],
-            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_amount)],
+            AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_amount)
+            ],
             PAYER: [CallbackQueryHandler(interactive_payer, pattern=r"^payer_")],
             PAYEES: [CallbackQueryHandler(interactive_payees, pattern=r"^payee_")],
         },
