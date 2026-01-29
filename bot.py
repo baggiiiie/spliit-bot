@@ -3,6 +3,7 @@
 
 import os
 import re
+import json
 import logging
 from dataclasses import dataclass
 from dotenv import load_dotenv
@@ -33,6 +34,11 @@ ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID", "")
 
 # Initialize Spliit client
 spliit = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
+
+# Load user mapping (spliit name -> telegram user id)
+USERS_JSON_PATH = os.path.join(os.path.dirname(__file__), "users.json")
+with open(USERS_JSON_PATH) as f:
+    SPLIIT_TO_TELEGRAM: dict[str, str] = json.load(f)
 
 # Pending confirmations: key -> (title, amount, paid_by_id, paid_for)
 pending: dict[str, tuple] = {}
@@ -487,6 +493,46 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 title=title, paid_by=paid_by_id, paid_for=paid_for, amount=amount
             )
             await query.edit_message_text(f"Added: {title}")
+
+            # Send notification mentioning involved users
+            group = spliit.get_group()
+            id_to_name = {p["id"]: p["name"] for p in group["participants"]}
+            currency = group["currency"]
+
+            payer_name = id_to_name.get(paid_by_id, "Unknown")
+            payee_ids = [pid for pid, _ in paid_for]
+            payee_names = [id_to_name.get(pid, "Unknown") for pid in payee_ids]
+
+            # Build mentions for involved users
+            mentions = []
+            involved_names = set(payee_names + [payer_name])
+            for name in involved_names:
+                tg_id = SPLIIT_TO_TELEGRAM.get(name.lower())
+                if tg_id:
+                    try:
+                        chat = await context.bot.get_chat(int(tg_id))
+                        if chat.username:
+                            mentions.append(f"@{chat.username}")
+                        else:
+                            display = chat.first_name or name
+                            mentions.append(
+                                f'<a href="tg://user?id={tg_id}">{display}</a>'
+                            )
+                    except Exception:
+                        mentions.append(f'<a href="tg://user?id={tg_id}">{name}</a>')
+                else:
+                    mentions.append(name)
+
+            amount_display = amount / 100
+            share = amount_display / len(payee_names)
+            msg = (
+                f"💸 <b>{title}</b> added\n"
+                f"Amount: {currency}{amount_display:.2f}\n"
+                f"Paid by: {payer_name}\n"
+                f"Split ({currency}{share:.2f} each): {', '.join(payee_names)}\n\n"
+                f"👋 {' '.join(mentions)}"
+            )
+            await query.message.reply_text(msg, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Failed to add expense: {e}")
             await query.edit_message_text(f"Failed: {e}")
