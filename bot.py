@@ -127,7 +127,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(
         "baggiiiie's Spliit Bot\n\n"
-        "url: https://spliit.app/groups/WF_-cIdW0KrDhsIal1uhI/\n"
+        "url: https://spliit.app/groups/WF\_-cIdW0KrDhsIal1uhI/\n"
         "Commands:\n"
         "/group - Show participants\n"
         "/balance - Show balances\n"
@@ -136,7 +136,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/add` (interactive)\n"
         "`/add $title, $amount` (interactive)\n"
         "`/add $title, $amount, with baggie, neo, yoga, and ricky`\n"
-        "                             ↳ first person paid",
+        "NOTE: ↳ first person paid",
         parse_mode="Markdown",
     )
 
@@ -283,7 +283,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
     expense = parse_add_command(text)
     if not expense:
         await update.message.reply_text(
-            "Format: `/add $title, $amount, with p1, p2, and p3`"
+            "Format: `/add $title, $amount, with p1, p2, and p3`\n"
             "↳ first person paid, you need a `with` keyword",
             parse_mode="Markdown",
         )
