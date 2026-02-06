@@ -87,7 +87,14 @@ def participant_keyboard(
         for name, pid in participants.items()
     ]
     if done_btn:
-        rows.append([InlineKeyboardButton(done_btn[0], callback_data=done_btn[1])])
+        all_selected = selected == set(pid for _, pid in participants.items())
+        rows.append([
+            InlineKeyboardButton(
+                "Deselect All" if all_selected else "Select All",
+                callback_data=f"{prefix}all",
+            ),
+            InlineKeyboardButton(done_btn[0], callback_data=done_btn[1]),
+        ])
     return InlineKeyboardMarkup(rows)
 
 
@@ -135,16 +142,17 @@ async def build_mention(name: str, context: ContextTypes.DEFAULT_TYPE) -> str:
 class ParsedExpense:
     title: str
     amount: float
-    paid_by: str | None = None
     participants: list[str] | None = None
 
 
-def parse_add_command(text: str) -> ParsedExpense | None:
-    text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
+def parse_add_command(
+    text: str, known_participants: list[str] | None = None
+) -> ParsedExpense | None:
+    text = re.sub(r"^/add\s*", "", text, flags=re.IGNORECASE).strip()
     if not text:
         return None
 
-    parts = [p.strip() for p in text.split(",")]
+    parts = [p.strip() for p in text.split(",", 2)]
     if len(parts) < 2:
         return None
 
@@ -154,35 +162,18 @@ def parse_add_command(text: str) -> ParsedExpense | None:
         return None
     amount = float(amount_match.group(1))
 
-    if len(parts) < 3:
+    if len(parts) < 3 or not known_participants:
         return ParsedExpense(title=title, amount=amount)
 
-    remaining = ", ".join(parts[2:])
-
-    paid_by = None
-    paid_by_match = re.search(r"paid\s+by\s+(\w+)", remaining, re.IGNORECASE)
-    if paid_by_match:
-        paid_by = paid_by_match.group(1).strip()
-        remaining = re.sub(r"paid\s+by\s+\w+,?\s*", "", remaining, flags=re.IGNORECASE)
-
-    with_match = re.search(r"with\s+(.+)$", remaining, re.IGNORECASE)
-    if not with_match:
-        return None
-
-    participants_text = re.sub(
-        r"\s+and\s+", ", ", with_match.group(1), flags=re.IGNORECASE
-    )
-    participants = [
-        p.strip().lower() for p in participants_text.split(",") if p.strip()
+    names_text = parts[2].lower()
+    matched = [
+        name for name in known_participants if name.lower() in names_text
     ]
-    if not participants:
-        return None
-
-    if not paid_by:
-        paid_by = participants[0]
+    if not matched:
+        return ParsedExpense(title=title, amount=amount)
 
     return ParsedExpense(
-        title=title, amount=amount, paid_by=paid_by.lower(), participants=participants
+        title=title, amount=amount, participants=[n.lower() for n in matched]
     )
 
 
@@ -191,11 +182,9 @@ def parse_with_llm(
 ) -> ParsedExpense | str | None:
     prompt = (
         "Convert the user message into this exact format:\n"
-        "/add $title, $amount, with p1, p2, and p3\n\n"
+        "/add $title, $amount, p1 p2 p3\n\n"
         "Rules:\n"
         f"- Available participants (use these exact names): {', '.join(participant_names)}\n"
-        "- The first person after 'with' is the one who paid.\n"
-        "- If the payer is not specified, put the first mentioned person first.\n"
         "- Include all participants who split the cost.\n"
         "- Return ONLY the /add command line, nothing else.\n"
         "- If you cannot understand or parse a valid expense, return exactly: <ERROR>\n\n"
@@ -238,8 +227,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Example:\n"
         "`/add` (interactive)\n"
         "`/add $title, $amount` (interactive)\n"
-        "`/add $title, $amount, with baggie, neo, yoga, and ricky`\n"
-        "NOTE: ↳ first person paid",
+        "`/add $title, $amount, baggie neo yoga ricky`\n"
+        "↳ bot will ask who paid",
         parse_mode="Markdown",
     )
 
@@ -323,7 +312,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
     text = (update.message.text or "").strip()
 
-    if text in ("/add", "/addbill"):
+    if text == "/add":
         await update.message.reply_text(
             "Enter expense title:",
             reply_markup=ForceReply(
@@ -333,35 +322,21 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         return TITLE
 
     assert context.user_data is not None
-    expense = parse_add_command(text)
-
-    if expense and expense.participants is None:
-        context.user_data["expense_title"] = expense.title
-        context.user_data["expense_amount"] = expense.amount
-
-        try:
-            participants_map = spliit.get_participants()
-            context.user_data["participants_map"] = participants_map
-        except Exception as e:
-            await update.message.reply_text(f"Error: {e}")
-            return ConversationHandler.END
-
-        await update.message.reply_text(
-            f"*{expense.title}* - {expense.amount:.2f}\n\nWho paid?",
-            parse_mode="Markdown",
-            reply_markup=participant_keyboard(participants_map, "payer_"),
-        )
-        return PAYER
 
     try:
         participants_map = spliit.get_participants()
     except Exception as e:
-        await update.message.reply_text(f"Error fetching participants: {e}")
+        await update.message.reply_text(f"Error: {e}")
         return ConversationHandler.END
 
-    if not expense or expense.participants is None:
+    context.user_data["participants_map"] = participants_map
+    participant_names = list(participants_map.keys())
+
+    expense = parse_add_command(text, participant_names)
+
+    if not expense:
         raw_text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
-        llm_result = parse_with_llm(raw_text, list(participants_map.keys()))
+        llm_result = parse_with_llm(raw_text, participant_names)
         if isinstance(llm_result, str):
             await update.message.reply_text(llm_result, parse_mode="Markdown")
             return ConversationHandler.END
@@ -369,44 +344,36 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             expense = llm_result
             logger.info(f"LLM parsed: {expense}")
 
-    if not expense or expense.participants is None:
+    if not expense:
         await update.message.reply_text(
-            "Format: `/add $title, $amount, with p1, p2, and p3`\n"
-            "↳ first person paid, you need a `with` keyword",
+            "Format: `/add title, amount, names`",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
 
-    name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
+    context.user_data["expense_title"] = expense.title
+    context.user_data["expense_amount"] = expense.amount
 
-    payer = name_map.get(expense.paid_by or "")
-    if not payer:
+    if expense.participants is None:
         await update.message.reply_text(
-            f"whodat? '{expense.paid_by}' not found.\nAvailable: {', '.join(participants_map.keys())}"
+            f"*{expense.title}* — {expense.amount:.2f}\n\nWho paid?",
+            parse_mode="Markdown",
+            reply_markup=participant_keyboard(participants_map, "payer_"),
         )
-        return ConversationHandler.END
+        return PAYER
 
-    matched = []
-    for name in expense.participants:
-        p = name_map.get(name)
-        if not p:
-            await update.message.reply_text(
-                f"'{name}' not found.\nAvailable: {', '.join(participants_map.keys())}"
-            )
-            return ConversationHandler.END
-        matched.append(p)
+    name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
+    matched = [(n, pid) for n, pid in ((name, name_map.get(name)) for name in expense.participants) if pid]
 
-    key = f"{update.effective_user.id}_{update.message.message_id}"
-    amount_cents = int(expense.amount * 100)
-    paid_for: PaidFor = [(pid, 1) for _, pid in matched]
-    pending[key] = (expense.title, amount_cents, payer[1], paid_for, tg_display_name(update))
+    context.user_data["selected_payees"] = [pid for _, (_, pid) in matched]
 
     await update.message.reply_text(
-        format_confirmation(expense.title, expense.amount, payer[0], [n for n, _ in matched]),
+        f"*{expense.title}* — {expense.amount:.2f}\n"
+        f"Split: {', '.join(n for (n, _) in matched)}\n\nWho paid?",
         parse_mode="Markdown",
-        reply_markup=confirm_keyboard(key),
+        reply_markup=participant_keyboard(participants_map, "payer_"),
     )
-    return ConversationHandler.END
+    return PAYER
 
 
 async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -460,8 +427,26 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     context.user_data["payer_id"] = payer_id
     context.user_data["payer_name"] = reverse[payer_id]
-    context.user_data["selected_payees"] = []
 
+    pre_selected = context.user_data.get("selected_payees", [])
+    if pre_selected:
+        title = context.user_data["expense_title"]
+        amount = context.user_data["expense_amount"]
+        paid_for: PaidFor = [(pid, 1) for pid in pre_selected]
+        payee_names = [reverse[pid] for pid in pre_selected]
+
+        assert query.message
+        key = f"{update.effective_user.id}_{query.message.message_id}"
+        pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_display_name(update))
+
+        await query.edit_message_text(
+            format_confirmation(title, amount, reverse[payer_id], payee_names),
+            parse_mode="Markdown",
+            reply_markup=confirm_keyboard(key),
+        )
+        return ConversationHandler.END
+
+    context.user_data["selected_payees"] = []
     await query.edit_message_text(
         "Select who to split with (tap to toggle, then Done):",
         reply_markup=participant_keyboard(
@@ -506,7 +491,13 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     payee_id = data[6:]
     selected = context.user_data.get("selected_payees", [])
-    if payee_id in selected:
+    if payee_id == "all":
+        all_ids = list(participants_map.values())
+        if set(selected) == set(all_ids):
+            selected = []
+        else:
+            selected = list(all_ids)
+    elif payee_id in selected:
         selected.remove(payee_id)
     else:
         selected.append(payee_id)
@@ -593,10 +584,7 @@ def main() -> None:
     app.add_handler(CommandHandler("balance", balance_cmd))
 
     add_conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("add", add_cmd),
-            CommandHandler("addbill", add_cmd),
-        ],
+        entry_points=[CommandHandler("add", add_cmd)],
         states={
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_title)],
             AMOUNT: [

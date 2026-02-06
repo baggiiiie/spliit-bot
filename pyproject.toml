@@ -14,3 +14,8 @@ dependencies = [
 
 [tool.uv.sources]
 spliit = { git = "https://github.com/guysoft/SpliitApi.git" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
