@@ -39,75 +39,132 @@ ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID", "")
 OPENCODE_CLI = os.getenv("OPENCODE_CLI", "opencode")
 OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "opencode/kimi-k2.5-free")
 
-# Webhook configuration
 BOT_MODE = os.getenv("BOT_MODE", "polling").lower()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
-# Initialize Spliit client
 spliit: Spliit | None = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
 
-
-# Load user mapping (spliit name -> telegram user id)
 USERS_JSON_PATH: str = os.path.join(os.path.dirname(__file__), "users.json")
-with open(USERS_JSON_PATH) as f:
-    SPLIIT_TO_TELEGRAM: dict[str, str] = json.load(f)
+try:
+    with open(USERS_JSON_PATH) as f:
+        SPLIIT_TO_TELEGRAM: dict[str, str] = json.load(f)
+except Exception:
+    SPLIIT_TO_TELEGRAM = {}
 
 PaidFor = list[tuple[str, int]]
 PendingExpense = tuple[str, int, str, PaidFor, str]
 
 pending: dict[str, PendingExpense] = {}
 
+TITLE, AMOUNT, PAYER, PAYEES = range(4)
+
 
 def is_allowed_chat(update: Update) -> bool:
-    """Check if the update is from the allowed chat."""
     chat_id = update.effective_chat.id if update.effective_chat else None
     user_id = update.effective_user.id if update.effective_user else None
     return str(chat_id) == ALLOWED_CHAT_ID or str(user_id) == ALLOWED_USER_ID
 
 
-# Conversation states for interactive /add
-TITLE, AMOUNT, PAYER, PAYEES = range(4)
+def id_to_name_map(client: Spliit) -> tuple[dict[str, str], str]:
+    group = client.get_group()
+    return {p["id"]: p["name"] for p in group["participants"]}, group["currency"]
+
+
+def participant_keyboard(
+    participants: dict[str, str],
+    prefix: str,
+    selected: set[str] | None = None,
+    done_btn: tuple[str, str] | None = None,
+) -> InlineKeyboardMarkup:
+    selected = selected or set()
+    rows = [
+        [InlineKeyboardButton(
+            f"{'✓ ' if pid in selected else ''}{name}",
+            callback_data=f"{prefix}{pid}",
+        )]
+        for name, pid in participants.items()
+    ]
+    if done_btn:
+        rows.append([InlineKeyboardButton(done_btn[0], callback_data=done_btn[1])])
+    return InlineKeyboardMarkup(rows)
+
+
+def confirm_keyboard(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Confirm", callback_data=f"yes_{key}"),
+        InlineKeyboardButton("Cancel", callback_data=f"no_{key}"),
+    ]])
+
+
+def format_confirmation(title: str, amount: float, payer: str, payees: list[str]) -> str:
+    share = amount / len(payees)
+    return (
+        f"**{title}**\n"
+        f"Amount: {amount:.2f}\n"
+        f"Paid by: {payer}\n"
+        f"Split: {', '.join(payees)}\n"
+        f"Each: {share:.2f}\n\n"
+        f"Confirm?"
+    )
+
+
+def tg_display_name(update: Update) -> str:
+    u = update.effective_user
+    if not u:
+        return "unknown"
+    return u.first_name or u.username or "unknown"
+
+
+async def build_mention(name: str, context: ContextTypes.DEFAULT_TYPE) -> str:
+    tg_id = SPLIIT_TO_TELEGRAM.get(name.lower())
+    if not tg_id:
+        return name
+    try:
+        chat = await context.bot.get_chat(int(tg_id))
+        if chat.username:
+            return f"@{chat.username}"
+        display = chat.first_name or name
+        return f'<a href="tg://user?id={tg_id}">{display}</a>'
+    except Exception:
+        return f'<a href="tg://user?id={tg_id}">{name}</a>'
 
 
 @dataclass
 class ParsedExpense:
     title: str
     amount: float
-    paid_by: str
-    participants: list[str]
+    paid_by: str | None = None
+    participants: list[str] | None = None
 
 
 def parse_add_command(text: str) -> ParsedExpense | None:
-    """Parse: /add title, amount currency, with p1, p2, and p3"""
     text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
     if not text:
         return None
 
     parts = [p.strip() for p in text.split(",")]
-    if len(parts) < 3:
+    if len(parts) < 2:
         return None
 
     title = parts[0]
-
-    # Parse amount (ignore currency, Spliit uses group currency)
     amount_match = re.match(r"(\d+(?:\.\d+)?)", parts[1].strip())
     if not amount_match:
         return None
     amount = float(amount_match.group(1))
 
-    # Parse participants from remaining parts
+    if len(parts) < 3:
+        return ParsedExpense(title=title, amount=amount)
+
     remaining = ", ".join(parts[2:])
 
-    # Check for "paid by X"
     paid_by = None
     paid_by_match = re.search(r"paid\s+by\s+(\w+)", remaining, re.IGNORECASE)
     if paid_by_match:
         paid_by = paid_by_match.group(1).strip()
         remaining = re.sub(r"paid\s+by\s+\w+,?\s*", "", remaining, flags=re.IGNORECASE)
 
-    # Get participants after "with"
     with_match = re.search(r"with\s+(.+)$", remaining, re.IGNORECASE)
     if not with_match:
         return None
@@ -118,7 +175,6 @@ def parse_add_command(text: str) -> ParsedExpense | None:
     participants = [
         p.strip().lower() for p in participants_text.split(",") if p.strip()
     ]
-
     if not participants:
         return None
 
@@ -133,11 +189,6 @@ def parse_add_command(text: str) -> ParsedExpense | None:
 def parse_with_llm(
     text: str, participant_names: list[str]
 ) -> ParsedExpense | str | None:
-    """Use opencode CLI to parse a natural-language expense description.
-
-    Returns ParsedExpense on success, an error string if LLM returns <ERROR>,
-    or None on failure.
-    """
     prompt = (
         "Convert the user message into this exact format:\n"
         "/add $title, $amount, with p1, p2, and p3\n\n"
@@ -164,7 +215,6 @@ def parse_with_llm(
         raw = result.stdout.strip()
         if "<ERROR>" in raw:
             return "Could not understand the expense. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
-        # Find the /add line in the output
         for line in raw.splitlines():
             line = line.strip()
             if line.startswith("/add"):
@@ -195,7 +245,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def get_balances(group_id: str) -> dict[str, Any]:
-    """Fetch balances from Spliit API."""
     import requests
 
     params_input = {"0": {"json": {"groupId": group_id}}}
@@ -214,19 +263,15 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     try:
-        group = spliit.get_group()
+        id_name, currency = id_to_name_map(spliit)
         balance_data = get_balances(SPLIIT_GROUP_ID)
         balances = balance_data["balances"]
         reimbursements = balance_data["reimbursements"]
 
-        # Map participant IDs to names
-        id_to_name = {p["id"]: p["name"] for p in group["participants"]}
-        currency = group["currency"]
-
-        # Format balances
+        group = spliit.get_group()
         lines = [f"**{group['name']}** Balances\n"]
         for pid, data in balances.items():
-            name = id_to_name.get(pid, pid)
+            name = id_name.get(pid, pid)
             total = data["total"] / 100
             if total > 0:
                 lines.append(f"- {name}: +{currency}{total:.2f}")
@@ -235,12 +280,11 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             else:
                 lines.append(f"- {name}: {currency}0.00")
 
-        # Format suggested reimbursements
         if reimbursements:
             lines.append("\n**Suggested Payments:**")
             for r in reimbursements:
-                from_name = id_to_name.get(r["from"], r["from"])
-                to_name = id_to_name.get(r["to"], r["to"])
+                from_name = id_name.get(r["from"], r["from"])
+                to_name = id_name.get(r["to"], r["to"])
                 amount = r["amount"] / 100
                 lines.append(f"- {from_name} -> {to_name}: {currency}{amount:.2f}")
 
@@ -270,24 +314,6 @@ async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Error: {e}")
 
 
-def parse_partial_add(text: str) -> tuple[str, float] | None:
-    """Parse: /add title, amount (without participants)"""
-    text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
-    if not text:
-        return None
-
-    parts = [p.strip() for p in text.split(",")]
-    if len(parts) != 2:
-        return None
-
-    title = parts[0]
-    amount_match = re.match(r"(\d+(?:\.\d+)?)", parts[1].strip())
-    if not amount_match:
-        return None
-
-    return (title, float(amount_match.group(1)))
-
-
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
     if not is_allowed_chat(update) or not update.message or not update.effective_user:
         return ConversationHandler.END
@@ -297,7 +323,6 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
     text = (update.message.text or "").strip()
 
-    # Check if command has no arguments -> full interactive mode
     if text in ("/add", "/addbill"):
         await update.message.reply_text(
             "Enter expense title:",
@@ -308,13 +333,11 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         return TITLE
 
     assert context.user_data is not None
+    expense = parse_add_command(text)
 
-    # Check for partial format: /add title, amount (no participants)
-    partial = parse_partial_add(text)
-    if partial:
-        title, amount = partial
-        context.user_data["expense_title"] = title
-        context.user_data["expense_amount"] = amount
+    if expense and expense.participants is None:
+        context.user_data["expense_title"] = expense.title
+        context.user_data["expense_amount"] = expense.amount
 
         try:
             participants_map = spliit.get_participants()
@@ -323,31 +346,22 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             await update.message.reply_text(f"Error: {e}")
             return ConversationHandler.END
 
-        keyboard = [
-            [InlineKeyboardButton(name, callback_data=f"payer_{pid}")]
-            for name, pid in participants_map.items()
-        ]
         await update.message.reply_text(
-            f"*{title}* - {amount:.2f}\n\nWho paid?",
+            f"*{expense.title}* - {expense.amount:.2f}\n\nWho paid?",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=participant_keyboard(participants_map, "payer_"),
         )
         return PAYER
 
-    expense = parse_add_command(text)
-
-    # Fetch participants early — needed for both LLM fallback and name matching
     try:
         participants_map = spliit.get_participants()
     except Exception as e:
         await update.message.reply_text(f"Error fetching participants: {e}")
         return ConversationHandler.END
 
-    # LLM fallback when regex parsing fails
-    if not expense:
+    if not expense or expense.participants is None:
         raw_text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
-        participant_names = list(participants_map.keys())
-        llm_result = parse_with_llm(raw_text, participant_names)
+        llm_result = parse_with_llm(raw_text, list(participants_map.keys()))
         if isinstance(llm_result, str):
             await update.message.reply_text(llm_result, parse_mode="Markdown")
             return ConversationHandler.END
@@ -355,7 +369,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             expense = llm_result
             logger.info(f"LLM parsed: {expense}")
 
-    if not expense:
+    if not expense or expense.participants is None:
         await update.message.reply_text(
             "Format: `/add $title, $amount, with p1, p2, and p3`\n"
             "↳ first person paid, you need a `with` keyword",
@@ -363,10 +377,9 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         )
         return ConversationHandler.END
 
-    # Match names (case-insensitive)
     name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
 
-    payer = name_map.get(expense.paid_by)
+    payer = name_map.get(expense.paid_by or "")
     if not payer:
         await update.message.reply_text(
             f"whodat? '{expense.paid_by}' not found.\nAvailable: {', '.join(participants_map.keys())}"
@@ -383,32 +396,15 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             return ConversationHandler.END
         matched.append(p)
 
-    # Store for confirmation
     key = f"{update.effective_user.id}_{update.message.message_id}"
     amount_cents = int(expense.amount * 100)
     paid_for: PaidFor = [(pid, 1) for _, pid in matched]
-    tg_name: str = (
-        update.effective_user.first_name or update.effective_user.username or "unknown"
-    )
-    pending[key] = (expense.title, amount_cents, payer[1], paid_for, tg_name)
-
-    share = expense.amount / len(matched)
-    keyboard = [
-        [
-            InlineKeyboardButton("Confirm", callback_data=f"yes_{key}"),
-            InlineKeyboardButton("Cancel", callback_data=f"no_{key}"),
-        ]
-    ]
+    pending[key] = (expense.title, amount_cents, payer[1], paid_for, tg_display_name(update))
 
     await update.message.reply_text(
-        f"**{expense.title}**\n"
-        f"Amount: {expense.amount:.2f}\n"
-        f"Paid by: {payer[0]}\n"
-        f"Split: {', '.join(n for n, _ in matched)}\n"
-        f"Each: {share:.2f}\n\n"
-        f"Confirm?",
+        format_confirmation(expense.title, expense.amount, payer[0], [n for n, _ in matched]),
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=confirm_keyboard(key),
     )
     return ConversationHandler.END
 
@@ -446,12 +442,9 @@ async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"Error: {e}")
         return ConversationHandler.END
 
-    keyboard = [
-        [InlineKeyboardButton(name, callback_data=f"payer_{pid}")]
-        for name, pid in participants_map.items()
-    ]
     await update.message.reply_text(
-        "Who paid?", reply_markup=InlineKeyboardMarkup(keyboard)
+        "Who paid?",
+        reply_markup=participant_keyboard(participants_map, "payer_"),
     )
     return PAYER
 
@@ -461,23 +454,19 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     assert query and query.data and context.user_data is not None
     await query.answer()
 
-    payer_id = query.data[6:]  # Remove "payer_" prefix
+    payer_id = query.data[6:]
     participants_map = context.user_data["participants_map"]
-    id_to_name = {pid: name for name, pid in participants_map.items()}
+    reverse = {pid: name for name, pid in participants_map.items()}
 
     context.user_data["payer_id"] = payer_id
-    context.user_data["payer_name"] = id_to_name[payer_id]
+    context.user_data["payer_name"] = reverse[payer_id]
     context.user_data["selected_payees"] = []
-
-    keyboard = [
-        [InlineKeyboardButton(name, callback_data=f"payee_{pid}")]
-        for name, pid in participants_map.items()
-    ]
-    keyboard.append([InlineKeyboardButton("< Done >", callback_data="payee_done")])
 
     await query.edit_message_text(
         "Select who to split with (tap to toggle, then Done):",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=participant_keyboard(
+            participants_map, "payee_", done_btn=("< Done >", "payee_done")
+        ),
     )
     return PAYEES
 
@@ -499,42 +488,23 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
         payer_id = context.user_data["payer_id"]
         payer_name = context.user_data["payer_name"]
         participants_map = context.user_data["participants_map"]
-        id_to_name = {pid: name for name, pid in participants_map.items()}
+        reverse = {pid: name for name, pid in participants_map.items()}
 
         paid_for: PaidFor = [(pid, 1) for pid in selected]
-        payee_names = [id_to_name[pid] for pid in selected]
+        payee_names = [reverse[pid] for pid in selected]
 
         assert query.message
         key = f"{update.effective_user.id}_{query.message.message_id}"
-        tg_name: str = (
-            update.effective_user.first_name
-            or update.effective_user.username
-            or "unknown"
-        )
-        pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_name)
-
-        share = amount / len(selected)
-        keyboard = [
-            [
-                InlineKeyboardButton("Confirm", callback_data=f"yes_{key}"),
-                InlineKeyboardButton("Cancel", callback_data=f"no_{key}"),
-            ]
-        ]
+        pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_display_name(update))
 
         await query.edit_message_text(
-            f"**{title}**\n"
-            f"Amount: {amount:.2f}\n"
-            f"Paid by: {payer_name}\n"
-            f"Split: {', '.join(payee_names)}\n"
-            f"Each: {share:.2f}\n\n"
-            f"Confirm?",
+            format_confirmation(title, amount, payer_name, payee_names),
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=confirm_keyboard(key),
         )
         return ConversationHandler.END
 
-    # Toggle payee selection
-    payee_id = data[6:]  # Remove "payee_" prefix
+    payee_id = data[6:]
     selected = context.user_data.get("selected_payees", [])
     if payee_id in selected:
         selected.remove(payee_id)
@@ -542,19 +512,12 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
         selected.append(payee_id)
     context.user_data["selected_payees"] = selected
 
-    # Rebuild keyboard with checkmarks
     participants_map = context.user_data["participants_map"]
-    keyboard = []
-    for name, pid in participants_map.items():
-        mark = "✓ " if pid in selected else ""
-        keyboard.append(
-            [InlineKeyboardButton(f"{mark}{name}", callback_data=f"payee_{pid}")]
-        )
-    keyboard.append([InlineKeyboardButton("✓ Done", callback_data="payee_done")])
-
     await query.edit_message_text(
         "Select who to split with (tap to toggle, then Done):",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=participant_keyboard(
+            participants_map, "payee_", set(selected), done_btn=("✓ Done", "payee_done")
+        ),
     )
     return PAYEES
 
@@ -590,34 +553,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             await query.edit_message_text(f"Added: {title}")
 
-            # Send notification mentioning involved users
-            group = spliit.get_group()
-            id_to_name = {p["id"]: p["name"] for p in group["participants"]}
-            currency = group["currency"]
+            id_name, currency = id_to_name_map(spliit)
+            payer_name = id_name.get(paid_by_id, "Unknown")
+            payee_names = [id_name.get(pid, "Unknown") for pid, _ in paid_for]
 
-            payer_name = id_to_name.get(paid_by_id, "Unknown")
-            payee_ids = [pid for pid, _ in paid_for]
-            payee_names = [id_to_name.get(pid, "Unknown") for pid in payee_ids]
-
-            # Build mentions for involved users
-            mentions: list[str] = []
-            involved_names: set[str] = set(payee_names + [payer_name])
-            for name in involved_names:
-                tg_id = SPLIIT_TO_TELEGRAM.get(name.lower())
-                if tg_id:
-                    try:
-                        chat = await context.bot.get_chat(int(tg_id))
-                        if chat.username:
-                            mentions.append(f"@{chat.username}")
-                        else:
-                            display = chat.first_name or name
-                            mentions.append(
-                                f'<a href="tg://user?id={tg_id}">{display}</a>'
-                            )
-                    except Exception:
-                        mentions.append(f'<a href="tg://user?id={tg_id}">{name}</a>')
-                else:
-                    mentions.append(name)
+            involved = set(payee_names + [payer_name])
+            mentions = [await build_mention(n, context) for n in involved]
 
             amount_display = amount / 100
             share = amount_display / len(payee_names)
