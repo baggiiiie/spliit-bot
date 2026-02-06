@@ -19,3 +19,8 @@ spliit = { git = "https://github.com/guysoft/SpliitApi.git" }
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "llm: tests that call the real LLM (deselect with -m 'not llm')",
+]

@@ -46,6 +46,10 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 spliit: Spliit | None = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
 
+PROMPT_PATH: str = os.path.join(os.path.dirname(__file__), "prompt.txt")
+with open(PROMPT_PATH) as f:
+    PROMPT_TEMPLATE: str = f.read()
+
 USERS_JSON_PATH: str = os.path.join(os.path.dirname(__file__), "users.json")
 try:
     with open(USERS_JSON_PATH) as f:
@@ -180,15 +184,9 @@ def parse_add_command(
 def parse_with_llm(
     text: str, participant_names: list[str]
 ) -> ParsedExpense | str | None:
-    prompt = (
-        "Convert the user message into this exact format:\n"
-        "/add $title, $amount, p1 p2 p3\n\n"
-        "Rules:\n"
-        f"- Available participants (use these exact names): {', '.join(participant_names)}\n"
-        "- Include all participants who split the cost.\n"
-        "- Return ONLY the /add command line, nothing else.\n"
-        "- If you cannot understand or parse a valid expense, return exactly: <ERROR>\n\n"
-        f"User message: {text}"
+    prompt = PROMPT_TEMPLATE.format(
+        participants=", ".join(participant_names),
+        message=text,
     )
 
     try:
@@ -202,12 +200,30 @@ def parse_with_llm(
             logger.error(f"opencode CLI failed: {result.stderr}")
             return None
         raw = result.stdout.strip()
-        if "<ERROR>" in raw:
+
+        json_match = re.search(r"\{[^}]+\}", raw)
+        if not json_match:
+            return None
+        data = json.loads(json_match.group())
+
+        if "error" in data:
             return "Could not understand the expense. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
-        for line in raw.splitlines():
-            line = line.strip()
-            if line.startswith("/add"):
-                return parse_add_command(line)
+
+        title = data.get("title")
+        amount = data.get("amount")
+        if not title or not isinstance(amount, (int, float)) or amount <= 0:
+            return None
+
+        participants = data.get("participants")
+        if isinstance(participants, list) and participants:
+            known_lower = {n.lower(): n for n in participant_names}
+            matched = [known_lower[p.lower()] for p in participants if p.lower() in known_lower]
+            if matched:
+                return ParsedExpense(title=title, amount=float(amount), participants=[n.lower() for n in matched])
+
+        return ParsedExpense(title=title, amount=float(amount))
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.error(f"LLM JSON parse failed: {e}")
         return None
     except Exception as e:
         logger.error(f"LLM parse failed: {e}")

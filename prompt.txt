@@ -1,0 +1,13 @@
+Extract the expense from the user message as JSON.
+Return ONLY a JSON object with these fields:
+{"title": "...", "amount": 12.50, "participants": ["name1", "name2"]}
+
+Rules:
+- Available participants (use these exact names): {participants}
+- Include all participants who split the cost.
+- amount must be a positive number.
+- participants must be a non-empty list.
+- Return ONLY the JSON object, no other text.
+- If you cannot parse a valid expense, return exactly: {"error": "reason"}
+
+User message: {message}

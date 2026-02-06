@@ -1,4 +1,5 @@
-from bot import ParsedExpense, parse_add_command
+import pytest
+from bot import ParsedExpense, parse_add_command, parse_with_llm
 
 PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
 
@@ -63,3 +64,25 @@ class TestParseAddCommand:
 
     def test_invalid_amount(self):
         assert parse_add_command("/add dinner, abc") is None
+
+
+@pytest.mark.llm
+class TestParseWithLLM:
+    def test_simple_expense(self):
+        result = parse_with_llm("dinner cost 100 split between baggie and neo", PARTICIPANTS)
+        assert isinstance(result, ParsedExpense)
+        assert result.amount == 100.0
+        assert result.participants is not None
+        assert "baggie" in result.participants
+        assert "neo" in result.participants
+
+    def test_all_participants(self):
+        result = parse_with_llm("lunch 50 everyone splits", PARTICIPANTS)
+        assert isinstance(result, ParsedExpense)
+        assert result.amount == 50.0
+        assert result.participants is not None
+        assert len(result.participants) == 4
+
+    def test_nonsense_returns_error(self):
+        result = parse_with_llm("hello how are you", PARTICIPANTS)
+        assert result is None or isinstance(result, str)
