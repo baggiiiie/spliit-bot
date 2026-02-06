@@ -66,6 +66,37 @@ class TestParseAddCommand:
         assert parse_add_command("/add dinner, abc") is None
 
 
+class TestPreLLMFilter:
+    """Tests for the pre-LLM relevance guard: messages must contain a number or participant name."""
+
+    @pytest.mark.parametrize("text", [
+        "hello how are you",
+        "what's for dinner",
+        "lol nice one",
+        "random gibberish text",
+        "hey what's up",
+    ])
+    def test_no_number_no_participant_rejected(self, text):
+        import re
+        raw = re.sub(r"^/add[-_]?bill?\s*", "", f"/add {text}", flags=re.IGNORECASE).strip()
+        has_number = bool(re.search(r"\d", raw))
+        has_participant = any(n.lower() in raw.lower() for n in PARTICIPANTS)
+        assert not has_number and not has_participant
+
+    @pytest.mark.parametrize("text", [
+        "lunch 50",
+        "baggie paid for dinner",
+        "neo owes 20",
+        "100 for groceries",
+    ])
+    def test_number_or_participant_accepted(self, text):
+        import re
+        raw = re.sub(r"^/add[-_]?bill?\s*", "", f"/add {text}", flags=re.IGNORECASE).strip()
+        has_number = bool(re.search(r"\d", raw))
+        has_participant = any(n.lower() in raw.lower() for n in PARTICIPANTS)
+        assert has_number or has_participant
+
+
 @pytest.mark.llm
 class TestParseWithLLM:
     def test_simple_expense(self):

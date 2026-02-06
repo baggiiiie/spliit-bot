@@ -352,6 +352,14 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
     if not expense:
         raw_text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
+        has_number = bool(re.search(r"\d", raw_text))
+        has_participant = any(n.lower() in raw_text.lower() for n in participant_names)
+        if not has_number and not has_participant:
+            await update.message.reply_text(
+                "Format: `/add title, amount, names`",
+                parse_mode="Markdown",
+            )
+            return ConversationHandler.END
         llm_result = parse_with_llm(raw_text, participant_names)
         if isinstance(llm_result, str):
             await update.message.reply_text(llm_result, parse_mode="Markdown")

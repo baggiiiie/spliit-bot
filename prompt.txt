@@ -8,6 +8,7 @@ Rules:
 - amount must be a positive number.
 - participants must be a non-empty list.
 - Return ONLY the JSON object, no other text.
+- If the message is not about an expense or spending money (e.g. greetings, questions, jokes, random text), return exactly: {"error": "not an expense"}
 - If you cannot parse a valid expense, return exactly: {"error": "reason"}
 
 User message: {message}
