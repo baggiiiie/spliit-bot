@@ -1,4 +1,5 @@
 import pytest
+
 from parsing import ParsedExpense, parse_add_command, parse_with_llm
 
 PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
@@ -38,6 +39,7 @@ class TestParseAddCommand:
 
     def test_no_matching_names_falls_back(self):
         result = parse_add_command("/add dinner, 50, alice bob", PARTICIPANTS)
+        assert result is not None
         assert result == ParsedExpense(title="dinner", amount=50.0)
         assert result.participants is None
 
@@ -48,6 +50,7 @@ class TestParseAddCommand:
 
     def test_names_without_known_participants(self):
         result = parse_add_command("/add dinner, 50, baggie neo")
+        assert result is not None
         assert result == ParsedExpense(title="dinner", amount=50.0)
         assert result.participants is None
 

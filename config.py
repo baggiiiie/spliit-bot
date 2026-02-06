@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import json
 import logging
+import os
+
 from dotenv import load_dotenv
 from spliit import Spliit
 
@@ -41,8 +42,8 @@ try:
 except Exception:
     SPLIIT_TO_TELEGRAM = {}
 
-PaidFor = list[tuple[str, int]]
-PendingExpense = tuple[str, int, str, PaidFor, str]
+type PaidFor = list[tuple[str, int]]
+type PendingExpense = tuple[str, int, str, PaidFor, str]
 
 pending: dict[str, PendingExpense] = {}
 

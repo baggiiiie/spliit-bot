@@ -8,11 +8,11 @@ import logging
 import re
 from typing import Any
 
-import requests
+import httpx
 from telegram import ForceReply, Message, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
-from config import SPLIIT_GROUP_ID, AMOUNT, PAYER, PAYEES, PaidFor, TITLE, pending, spliit
+from config import AMOUNT, PAYEES, PAYER, SPLIIT_GROUP_ID, TITLE, PaidFor, pending, spliit
 from helpers import (
     build_mention,
     confirm_keyboard,
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def get_balances(group_id: str) -> dict[str, Any]:
     params_input = {"0": {"json": {"groupId": group_id}}}
     params = {"batch": "1", "input": json.dumps(params_input)}
-    response = requests.get(
+    response = httpx.get(
         "https://spliit.app/api/trpc/groups.balances.list", params=params
     )
     return response.json()[0]["result"]["data"]["json"]
@@ -182,7 +182,11 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         return PAYER
 
     name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
-    matched = [(n, pid) for n, pid in ((name, name_map.get(name)) for name in expense.participants) if pid]
+    matched = [
+        (n, pid)
+        for n, pid in ((name, name_map.get(name)) for name in expense.participants)
+        if pid
+    ]
 
     context.user_data["selected_payees"] = [pid for _, (_, pid) in matched]
 
@@ -254,7 +258,7 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         paid_for: PaidFor = [(pid, 1) for pid in pre_selected]
         payee_names = [reverse[pid] for pid in pre_selected]
 
-        assert query.message
+        assert query.message and update.effective_user
         key = f"{update.effective_user.id}_{query.message.message_id}"
         pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_display_name(update))
 
@@ -309,20 +313,16 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
     payee_id = data[6:]
+    participants_map = context.user_data["participants_map"]
     selected = context.user_data.get("selected_payees", [])
     if payee_id == "all":
         all_ids = list(participants_map.values())
-        if set(selected) == set(all_ids):
-            selected = []
-        else:
-            selected = list(all_ids)
+        selected = [] if set(selected) == set(all_ids) else list(all_ids)
     elif payee_id in selected:
         selected.remove(payee_id)
     else:
         selected.append(payee_id)
     context.user_data["selected_payees"] = selected
-
-    participants_map = context.user_data["participants_map"]
     await query.edit_message_text(
         "Select who to split with (tap to toggle, then Done):",
         reply_markup=participant_keyboard(
@@ -367,7 +367,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payer_name = id_name.get(paid_by_id, "Unknown")
             payee_names = [id_name.get(pid, "Unknown") for pid, _ in paid_for]
 
-            involved = set(payee_names + [payer_name])
+            involved = set([*payee_names, payer_name])
             mentions = [await build_mention(n, context) for n in involved]
 
             amount_display = amount / 100
@@ -376,7 +376,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"💸 <b>{html.escape(title)}</b> added\n"
                 f"Amount: {html.escape(currency)}{amount_display:.2f}\n"
                 f"Paid by: {html.escape(payer_name)}\n"
-                f"Split ({html.escape(currency)}{share:.2f} each): {html.escape(', '.join(payee_names))}\n\n"
+                f"Split ({html.escape(currency)}{share:.2f} each): "
+                f"{html.escape(', '.join(payee_names))}\n\n"
                 f"👋 {' '.join(mentions)}"
             )
             assert isinstance(query.message, Message)

@@ -78,7 +78,10 @@ def parse_with_llm(
         data = json.loads(json_match.group())
 
         if "error" in data:
-            return "Could not understand the expense. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
+            return (
+                "Could not understand the expense. Please use the format:\n"
+                "`/add $title, $amount, with p1, p2, and p3`"
+            )
 
         title = data.get("title")
         amount = data.get("amount")
@@ -90,7 +93,9 @@ def parse_with_llm(
             known_lower = {n.lower(): n for n in participant_names}
             matched = [known_lower[p.lower()] for p in participants if p.lower() in known_lower]
             if matched:
-                return ParsedExpense(title=title, amount=float(amount), participants=[n.lower() for n in matched])
+                return ParsedExpense(
+                    title=title, amount=float(amount), participants=[n.lower() for n in matched]
+                )
 
         return ParsedExpense(title=title, amount=float(amount))
     except (json.JSONDecodeError, KeyError, TypeError) as e:

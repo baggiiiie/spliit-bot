@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from spliit import Spliit
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import SPLIIT_TO_TELEGRAM, ALLOWED_CHAT_ID, ALLOWED_USER_ID
+from config import ALLOWED_CHAT_ID, ALLOWED_USER_ID, SPLIIT_TO_TELEGRAM
 
 
 def id_to_name_map(client: Spliit) -> tuple[dict[str, str], str]:
