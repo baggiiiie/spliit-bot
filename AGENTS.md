@@ -14,7 +14,7 @@ Telegram bot for managing shared expenses via [Spliit](https://spliit.app).
 - **Type check:** `uv run ty check`
 - **Install deps:** `uv sync`
 
-After making changes, always run: `uv run ruff check . && uv run ty check && uv run pytest test_bot.py -m 'not llm' -v`
+After making changes, always run: `uv run ruff format . && uv run ruff check . && uv run ty check && uv run pytest test_bot.py -m 'not llm' -v`
 
 Only run LLM tests (`-m llm`) when `prompt.txt` has been modified.
 
@@ -35,8 +35,8 @@ test_bot.py     — Tests (unit + @pytest.mark.llm integration tests)
 
 - **bot.py** is the entrypoint only. It imports handlers and wires them to the Application. No business logic here.
 - **config.py** owns all environment variables, constants, type aliases, and module-level shared state (`pending`, `spliit` client). Other modules import from config, never define their own env var reads.
-- **handlers.py** contains all Telegram handler functions. It imports from `config`, `helpers`, and `parsing`. It should not define UI building logic (that goes in `helpers`).
-- **helpers.py** contains pure/utility functions for Telegram UI (keyboards, formatting, mentions, chat validation). No handler logic, no Spliit API calls.
+- **handlers.py** contains all Telegram handler functions and external API calls (e.g., `get_balances`). It imports from `config`, `helpers`, and `parsing`. It should not define UI building logic (that goes in `helpers`).
+- **helpers.py** contains pure/utility functions for Telegram UI (keyboards, formatting, mentions, chat validation). No handler logic, no Spliit API calls, no external HTTP requests.
 - **parsing.py** contains expense text parsing only. No Telegram imports, no side effects beyond LLM subprocess calls.
 - Dependencies flow: `bot.py` → `handlers.py` → `helpers.py` / `parsing.py` → `config.py`. No circular imports.
 
@@ -67,3 +67,8 @@ test_bot.py     — Tests (unit + @pytest.mark.llm integration tests)
 - Use `@pytest.mark.parametrize` for data-driven tests
 - LLM integration tests are marked `@pytest.mark.llm` and should assert on structure (isinstance, field presence) not exact strings
 - No mocking of external services yet; handler tests would need Telegram Update mocks
+
+## Do Not Modify
+
+- `.env` — contains secrets, never touch
+- `users.json` — production mapping of participant names to Telegram user IDs, do not overwrite with test data
