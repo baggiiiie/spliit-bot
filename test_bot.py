@@ -1,5 +1,5 @@
 import pytest
-from bot import ParsedExpense, parse_add_command, parse_with_llm
+from parsing import ParsedExpense, parse_add_command, parse_with_llm
 
 PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
 
