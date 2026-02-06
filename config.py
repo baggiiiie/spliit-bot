@@ -35,7 +35,9 @@ PROMPT_PATH: str = os.path.join(os.path.dirname(__file__), "prompt.txt")
 with open(PROMPT_PATH) as f:
     PROMPT_TEMPLATE: str = f.read()
 
-USERS_JSON_PATH: str = os.path.join(os.path.dirname(__file__), "users.json")
+USERS_JSON_PATH: str = os.environ.get(
+    "USERS_JSON_PATH", os.path.join(os.path.dirname(__file__), "users.json")
+)
 try:
     with open(USERS_JSON_PATH) as f:
         SPLIIT_TO_TELEGRAM: dict[str, str] = json.load(f)

@@ -1,0 +1,16 @@
+app = 'spliit-telegram-bot'
+primary_region = 'sjc'
+
+[build]
+
+[env]
+  BOT_MODE = 'polling'
+  USERS_JSON_PATH = '/data/users.json'
+
+[mounts]
+  source = 'data'
+  destination = '/data'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '256mb'
