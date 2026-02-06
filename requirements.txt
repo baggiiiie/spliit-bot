@@ -1,3 +1,4 @@
 python-telegram-bot>=20.0
 python-dotenv>=1.0.0
 spliit @ git+https://github.com/guysoft/SpliitApi.git
+google-genai>=1.0.0

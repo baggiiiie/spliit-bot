@@ -6,6 +6,7 @@ import re
 import json
 import logging
 import html
+import subprocess
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from spliit import Spliit
@@ -32,6 +33,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SPLIIT_GROUP_ID = os.getenv("SPLIIT_GROUP_ID", "")
 ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "")
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID", "")
+OPENCODE_CLI = os.getenv("OPENCODE_CLI", "opencode")
+OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "opencode/kimi-k2.5-free")
 
 # Webhook configuration
 BOT_MODE = os.getenv("BOT_MODE", "polling").lower()
@@ -41,6 +44,7 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 # Initialize Spliit client
 spliit = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
+
 
 # Load user mapping (spliit name -> telegram user id)
 USERS_JSON_PATH = os.path.join(os.path.dirname(__file__), "users.json")
@@ -120,6 +124,49 @@ def parse_add_command(text: str) -> ParsedExpense | None:
     return ParsedExpense(
         title=title, amount=amount, paid_by=paid_by.lower(), participants=participants
     )
+
+
+def parse_with_llm(text: str, participant_names: list[str]) -> ParsedExpense | str | None:
+    """Use opencode CLI to parse a natural-language expense description.
+
+    Returns ParsedExpense on success, an error string if LLM returns <ERROR>,
+    or None on failure.
+    """
+    prompt = (
+        "Convert the user message into this exact format:\n"
+        "/add $title, $amount, with p1, p2, and p3\n\n"
+        "Rules:\n"
+        f"- Available participants (use these exact names): {', '.join(participant_names)}\n"
+        "- The first person after 'with' is the one who paid.\n"
+        "- If the payer is not specified, put the first mentioned person first.\n"
+        "- Include all participants who split the cost.\n"
+        "- Return ONLY the /add command line, nothing else.\n"
+        "- If you cannot understand or parse a valid expense, return exactly: <ERROR>\n\n"
+        f"User message: {text}"
+    )
+
+    try:
+        result = subprocess.run(
+            [OPENCODE_CLI, "run", "-m", OPENCODE_MODEL, prompt],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            logger.error(f"opencode CLI failed: {result.stderr}")
+            return None
+        raw = result.stdout.strip()
+        if "<ERROR>" in raw:
+            return "Could not understand the expense. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
+        # Find the /add line in the output
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("/add"):
+                return parse_add_command(line)
+        return None
+    except Exception as e:
+        logger.error(f"LLM parse failed: {e}")
+        return None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -281,18 +328,32 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         return PAYER
 
     expense = parse_add_command(text)
+
+    # Fetch participants early — needed for both LLM fallback and name matching
+    try:
+        participants_map = spliit.get_participants()
+    except Exception as e:
+        await update.message.reply_text(f"Error fetching participants: {e}")
+        return ConversationHandler.END
+
+    # LLM fallback when regex parsing fails
+    if not expense:
+        raw_text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
+        participant_names = list(participants_map.keys())
+        llm_result = parse_with_llm(raw_text, participant_names)
+        if isinstance(llm_result, str):
+            await update.message.reply_text(llm_result, parse_mode="Markdown")
+            return ConversationHandler.END
+        if llm_result:
+            expense = llm_result
+            logger.info(f"LLM parsed: {expense}")
+
     if not expense:
         await update.message.reply_text(
             "Format: `/add $title, $amount, with p1, p2, and p3`\n"
             "↳ first person paid, you need a `with` keyword",
             parse_mode="Markdown",
         )
-        return ConversationHandler.END
-
-    try:
-        participants_map = spliit.get_participants()
-    except Exception as e:
-        await update.message.reply_text(f"Error fetching participants: {e}")
         return ConversationHandler.END
 
     # Match names (case-insensitive)
