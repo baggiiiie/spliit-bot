@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Spliit Telegram Bot - Manage Spliit expenses via Telegram."""
 
+from __future__ import annotations
+
 import os
 import re
 import json
@@ -8,9 +10,10 @@ import logging
 import html
 import subprocess
 from dataclasses import dataclass
+from typing import Any
 from dotenv import load_dotenv
 from spliit import Spliit
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
+from telegram import Message, Update, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -43,24 +46,25 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 # Initialize Spliit client
-spliit = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
+spliit: Spliit | None = Spliit(group_id=SPLIIT_GROUP_ID) if SPLIIT_GROUP_ID else None
 
 
 # Load user mapping (spliit name -> telegram user id)
-USERS_JSON_PATH = os.path.join(os.path.dirname(__file__), "users.json")
+USERS_JSON_PATH: str = os.path.join(os.path.dirname(__file__), "users.json")
 with open(USERS_JSON_PATH) as f:
     SPLIIT_TO_TELEGRAM: dict[str, str] = json.load(f)
 
-# Pending confirmations: key -> (title, amount, paid_by_id, paid_for, telegram_username)
-pending: dict[str, tuple] = {}
+PaidFor = list[tuple[str, int]]
+PendingExpense = tuple[str, int, str, PaidFor, str]
+
+pending: dict[str, PendingExpense] = {}
 
 
 def is_allowed_chat(update: Update) -> bool:
     """Check if the update is from the allowed chat."""
-    return (
-        str(update.effective_chat.id) == ALLOWED_CHAT_ID
-        or str(update.effective_user.id) == ALLOWED_USER_ID
-    )
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    user_id = update.effective_user.id if update.effective_user else None
+    return str(chat_id) == ALLOWED_CHAT_ID or str(user_id) == ALLOWED_USER_ID
 
 
 # Conversation states for interactive /add
@@ -126,7 +130,9 @@ def parse_add_command(text: str) -> ParsedExpense | None:
     )
 
 
-def parse_with_llm(text: str, participant_names: list[str]) -> ParsedExpense | str | None:
+def parse_with_llm(
+    text: str, participant_names: list[str]
+) -> ParsedExpense | str | None:
     """Use opencode CLI to parse a natural-language expense description.
 
     Returns ParsedExpense on success, an error string if LLM returns <ERROR>,
@@ -170,7 +176,7 @@ def parse_with_llm(text: str, participant_names: list[str]) -> ParsedExpense | s
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_allowed_chat(update):
+    if not is_allowed_chat(update) or not update.message:
         return
     await update.message.reply_text(
         "baggiiiie's Spliit Bot\n\n"
@@ -188,10 +194,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-def get_balances(group_id: str) -> dict:
+def get_balances(group_id: str) -> dict[str, Any]:
     """Fetch balances from Spliit API."""
     import requests
-    import json
 
     params_input = {"0": {"json": {"groupId": group_id}}}
     params = {"batch": "1", "input": json.dumps(params_input)}
@@ -202,7 +207,7 @@ def get_balances(group_id: str) -> dict:
 
 
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_allowed_chat(update):
+    if not is_allowed_chat(update) or not update.message:
         return
     if not spliit:
         await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
@@ -246,7 +251,7 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_allowed_chat(update):
+    if not is_allowed_chat(update) or not update.message:
         return
     if not spliit:
         await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
@@ -284,7 +289,7 @@ def parse_partial_add(text: str) -> tuple[str, float] | None:
 
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
-    if not is_allowed_chat(update):
+    if not is_allowed_chat(update) or not update.message or not update.effective_user:
         return ConversationHandler.END
     if not spliit:
         await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
@@ -301,6 +306,8 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             ),
         )
         return TITLE
+
+    assert context.user_data is not None
 
     # Check for partial format: /add title, amount (no participants)
     partial = parse_partial_add(text)
@@ -379,8 +386,8 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
     # Store for confirmation
     key = f"{update.effective_user.id}_{update.message.message_id}"
     amount_cents = int(expense.amount * 100)
-    paid_for = [(pid, 1) for _, pid in matched]
-    tg_name = (
+    paid_for: PaidFor = [(pid, 1) for _, pid in matched]
+    tg_name: str = (
         update.effective_user.first_name or update.effective_user.username or "unknown"
     )
     pending[key] = (expense.title, amount_cents, payer[1], paid_for, tg_name)
@@ -407,6 +414,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
 
 async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message and update.message.text and context.user_data is not None
     context.user_data["expense_title"] = update.message.text.strip()
     await update.message.reply_text(
         "Enter amount:",
@@ -416,6 +424,7 @@ async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message and update.message.text and context.user_data is not None
     text = update.message.text.strip()
     match = re.match(r"(\d+(?:\.\d+)?)", text)
     if not match:
@@ -429,6 +438,7 @@ async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["expense_amount"] = float(match.group(1))
 
+    assert spliit
     try:
         participants_map = spliit.get_participants()
         context.user_data["participants_map"] = participants_map
@@ -448,6 +458,7 @@ async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    assert query and query.data and context.user_data is not None
     await query.answer()
 
     payer_id = query.data[6:]  # Remove "payer_" prefix
@@ -473,11 +484,12 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    assert query and query.data and update.effective_user and context.user_data is not None
     await query.answer()
 
-    data = query.data
+    data: str = query.data
     if data == "payee_done":
-        selected = context.user_data.get("selected_payees", [])
+        selected: list[str] = context.user_data.get("selected_payees", [])
         if not selected:
             await query.answer("Select at least one person", show_alert=True)
             return PAYEES
@@ -489,11 +501,12 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
         participants_map = context.user_data["participants_map"]
         id_to_name = {pid: name for name, pid in participants_map.items()}
 
-        paid_for = [(pid, 1) for pid in selected]
+        paid_for: PaidFor = [(pid, 1) for pid in selected]
         payee_names = [id_to_name[pid] for pid in selected]
 
+        assert query.message
         key = f"{update.effective_user.id}_{query.message.message_id}"
-        tg_name = (
+        tg_name: str = (
             update.effective_user.first_name
             or update.effective_user.username
             or "unknown"
@@ -547,15 +560,17 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cancel_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message
     await update.message.reply_text("Cancelled.")
     return ConversationHandler.END
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    assert query
     await query.answer()
 
-    data = query.data or ""
+    data: str = query.data or ""
     if data.startswith("yes_"):
         key = data[4:]
         info = pending.pop(key, None)
@@ -566,6 +581,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         title, amount, paid_by_id, paid_for, tg_name = info
         expense_title = f"[telebot-{tg_name}] {title}"
         try:
+            assert spliit
             spliit.add_expense(
                 title=expense_title,
                 paid_by=paid_by_id,
@@ -584,8 +600,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payee_names = [id_to_name.get(pid, "Unknown") for pid in payee_ids]
 
             # Build mentions for involved users
-            mentions = []
-            involved_names = set(payee_names + [payer_name])
+            mentions: list[str] = []
+            involved_names: set[str] = set(payee_names + [payer_name])
             for name in involved_names:
                 tg_id = SPLIIT_TO_TELEGRAM.get(name.lower())
                 if tg_id:
@@ -612,6 +628,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"Split ({html.escape(currency)}{share:.2f} each): {html.escape(', '.join(payee_names))}\n\n"
                 f"👋 {' '.join(mentions)}"
             )
+            assert isinstance(query.message, Message)
             await query.message.reply_text(msg, parse_mode="HTML")
         except Exception as e:
             logger.error(f"Failed to add expense: {e}")
