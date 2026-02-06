@@ -100,6 +100,14 @@ class TestPreLLMFilter:
         assert has_number or has_participant
 
 
+class TestPromptTemplate:
+    def test_formats_without_error(self):
+        from config import PROMPT_TEMPLATE
+        result = PROMPT_TEMPLATE.format(participants="Alice, Bob", message="lunch 50")
+        assert "Alice, Bob" in result
+        assert "lunch 50" in result
+
+
 @pytest.mark.llm
 class TestParseWithLLM:
     def test_simple_expense(self):

@@ -69,12 +69,12 @@ def parse_with_llm(
         )
         if result.returncode != 0:
             logger.error(f"opencode CLI failed: {result.stderr}")
-            return None
+            return "Error with LLM. Please try again later."
         raw = result.stdout.strip()
 
         json_match = re.search(r"\{[^}]+\}", raw)
         if not json_match:
-            return None
+            return "Your request has been rejected. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
         data = json.loads(json_match.group())
 
         if "error" in data:
@@ -86,7 +86,7 @@ def parse_with_llm(
         title = data.get("title")
         amount = data.get("amount")
         if not title or not isinstance(amount, (int, float)) or amount <= 0:
-            return None
+            return "Your request has been rejected. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
 
         participants = data.get("participants")
         if isinstance(participants, list) and participants:
@@ -100,7 +100,10 @@ def parse_with_llm(
         return ParsedExpense(title=title, amount=float(amount))
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"LLM JSON parse failed: {e}")
-        return None
+        return "Your request has been rejected. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
+    except subprocess.TimeoutExpired:
+        logger.error("LLM request timed out")
+        return "Error with LLM. Please try again later."
     except Exception as e:
         logger.error(f"LLM parse failed: {e}")
-        return None
+        return "Error with LLM. Please try again later."

@@ -1,5 +1,10 @@
+# fly.toml app configuration file generated for spliit-telegram-bot on 2026-02-06T22:55:38+08:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
 app = 'spliit-telegram-bot'
-primary_region = 'sjc'
+primary_region = 'sin'
 
 [build]
 
@@ -7,7 +12,7 @@ primary_region = 'sjc'
   BOT_MODE = 'polling'
   USERS_JSON_PATH = '/data/users.json'
 
-[mounts]
+[[mounts]]
   source = 'data'
   destination = '/data'
 
