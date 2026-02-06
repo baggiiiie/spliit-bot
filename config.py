@@ -48,5 +48,6 @@ type PaidFor = list[tuple[str, int]]
 type PendingExpense = tuple[str, int, str, PaidFor, str]
 
 pending: dict[str, PendingExpense] = {}
+pending_deletes: dict[str, str] = {}
 
 TITLE, AMOUNT, PAYER, PAYEES = range(4)

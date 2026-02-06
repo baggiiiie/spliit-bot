@@ -9,10 +9,10 @@ import re
 from typing import Any
 
 import httpx
-from telegram import ForceReply, Message, Update
+from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
-from config import AMOUNT, PAYEES, PAYER, SPLIIT_GROUP_ID, TITLE, PaidFor, pending, spliit
+from config import AMOUNT, PAYEES, PAYER, SPLIIT_GROUP_ID, TITLE, PaidFor, pending, pending_deletes, spliit
 from helpers import (
     build_mention,
     confirm_keyboard,
@@ -36,6 +36,37 @@ def get_balances(group_id: str) -> dict[str, Any]:
     return response.json()[0]["result"]["data"]["json"]
 
 
+def get_expenses(group_id: str) -> list[dict[str, Any]]:
+    params_input = {
+        "0": {"json": {"groupId": group_id}},
+        "1": {"json": {"groupId": group_id}},
+    }
+    params = {"batch": "1", "input": json.dumps(params_input)}
+    response = httpx.get(
+        "https://spliit.app/api/trpc/groups.get,groups.getDetails", params=params
+    )
+    data = response.json()
+    return data[1]["result"]["data"]["json"]["expenses"]
+
+
+def delete_expense(group_id: str, expense_id: str) -> None:
+    params = {"batch": "1"}
+    json_data = {
+        "0": {
+            "json": {
+                "groupId": group_id,
+                "expenseId": expense_id,
+            },
+        },
+    }
+    response = httpx.post(
+        "https://spliit.app/api/trpc/groups.expenses.delete",
+        params=params,
+        json=json_data,
+    )
+    response.raise_for_status()
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
@@ -45,7 +76,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Commands:\n"
         "/group - Show participants\n"
         "/balance - Show balances\n"
-        "/add title, amount, with participants\n\n"
+        "/add title, amount, with participants\n"
+        "/dellast - Delete the latest expense\n\n"
         "Example:\n"
         "`/add` (interactive)\n"
         "`/add $title, $amount` (interactive)\n"
@@ -91,6 +123,52 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Failed to get balances: {e}")
+        await update.message.reply_text(f"Error: {e}")
+
+
+async def dellast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_allowed_chat(update) or not update.message:
+        return
+    if not spliit:
+        await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
+        return
+
+    try:
+        expenses = get_expenses(SPLIIT_GROUP_ID)
+        if not expenses:
+            await update.message.reply_text("No expenses found.")
+            return
+
+        latest = expenses[0]
+        expense_id = latest["id"]
+        title = latest["title"]
+        amount = latest["amount"] / 100
+
+        id_name, currency = id_to_name_map(spliit)
+        payer_name = id_name.get(latest["paidById"], "Unknown")
+        payee_names = [
+            id_name.get(p["participantId"], "Unknown")
+            for p in latest["paidFor"]
+        ]
+
+        assert update.effective_user
+        key = f"{update.effective_user.id}_{update.message.message_id}"
+        pending_deletes[key] = expense_id
+
+        await update.message.reply_text(
+            f"Delete latest expense?\n\n"
+            f"**{title}**\n"
+            f"Amount: {currency}{amount:.2f}\n"
+            f"Paid by: {payer_name}\n"
+            f"Split: {', '.join(payee_names)}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Delete", callback_data=f"delyes_{key}"),
+                InlineKeyboardButton("Cancel", callback_data=f"delno_{key}"),
+            ]]),
+        )
+    except Exception as e:
+        logger.error(f"Failed to get latest expense: {e}")
         await update.message.reply_text(f"Error: {e}")
 
 
@@ -389,4 +467,22 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif data.startswith("no_"):
         key = data[3:]
         pending.pop(key, None)
+        await query.edit_message_text("Cancelled.")
+
+    elif data.startswith("delyes_"):
+        key = data[7:]
+        expense_id = pending_deletes.pop(key, None)
+        if not expense_id:
+            await query.edit_message_text("Expired. Try again.")
+            return
+        try:
+            delete_expense(SPLIIT_GROUP_ID, expense_id)
+            await query.edit_message_text("Deleted.")
+        except Exception as e:
+            logger.error(f"Failed to delete expense: {e}")
+            await query.edit_message_text(f"Failed: {e}")
+
+    elif data.startswith("delno_"):
+        key = data[6:]
+        pending_deletes.pop(key, None)
         await query.edit_message_text("Cancelled.")

@@ -1,3 +1,6 @@
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
 from parsing import ParsedExpense, parse_add_command, parse_with_llm
@@ -128,3 +131,121 @@ class TestParseWithLLM:
     def test_nonsense_returns_error(self):
         result = parse_with_llm("hello how are you", PARTICIPANTS)
         assert result is None or isinstance(result, str)
+
+
+FAKE_EXPENSES = [
+    {
+        "id": "exp-123",
+        "title": "[telebot-Baggie] Dinner",
+        "amount": 5000,
+        "paidById": "pid-1",
+        "paidFor": [
+            {"participantId": "pid-1"},
+            {"participantId": "pid-2"},
+        ],
+    },
+    {
+        "id": "exp-100",
+        "title": "Old expense",
+        "amount": 2000,
+        "paidById": "pid-2",
+        "paidFor": [{"participantId": "pid-2"}],
+    },
+]
+
+FAKE_ID_NAME = {"pid-1": "Baggie", "pid-2": "Neo"}
+
+
+def _make_update(chat_id="123", user_id=42, message_id=999):
+    update = MagicMock()
+    update.effective_chat.id = int(chat_id)
+    update.effective_user.id = user_id
+    update.message.message_id = message_id
+    update.message.reply_text = AsyncMock()
+    return update
+
+
+def _make_callback_update(data, user_id=42, message_id=999):
+    update = MagicMock()
+    update.effective_chat.id = 123
+    update.effective_user.id = user_id
+    update.callback_query.data = data
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_text = AsyncMock()
+    return update
+
+
+class TestDellastCmd:
+    @patch("handlers.id_to_name_map", return_value=(FAKE_ID_NAME, "$"))
+    @patch("handlers.get_expenses", return_value=FAKE_EXPENSES)
+    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.spliit", new_callable=lambda: MagicMock)
+    def test_shows_latest_expense(self, mock_spliit, mock_allowed, mock_get, mock_idname):
+        from handlers import dellast_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        asyncio.run(dellast_cmd(update, ctx))
+
+        update.message.reply_text.assert_called_once()
+        call_kwargs = update.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert "Dinner" in text
+        assert "$50.00" in text
+        assert "Baggie" in text
+
+    @patch("handlers.get_expenses", return_value=[])
+    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.spliit", new_callable=lambda: MagicMock)
+    def test_no_expenses(self, mock_spliit, mock_allowed, mock_get):
+        from handlers import dellast_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        asyncio.run(dellast_cmd(update, ctx))
+
+        update.message.reply_text.assert_called_once_with("No expenses found.")
+
+    @patch("handlers.is_allowed_chat", return_value=False)
+    def test_disallowed_chat(self, mock_allowed):
+        from handlers import dellast_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        asyncio.run(dellast_cmd(update, ctx))
+
+        update.message.reply_text.assert_not_called()
+
+
+class TestDellastButton:
+    @patch("handlers.delete_expense")
+    @patch("handlers.pending_deletes", {"42_999": "exp-123"})
+    def test_confirm_delete(self, mock_delete):
+        from handlers import SPLIIT_GROUP_ID, button
+
+        update = _make_callback_update("delyes_42_999")
+        ctx = MagicMock()
+        asyncio.run(button(update, ctx))
+
+        mock_delete.assert_called_once_with(SPLIIT_GROUP_ID, "exp-123")
+        update.callback_query.edit_message_text.assert_called_once_with("Deleted.")
+
+    @patch("handlers.pending_deletes", {"42_999": "exp-123"})
+    def test_cancel_delete(self):
+        from handlers import button
+
+        update = _make_callback_update("delno_42_999")
+        ctx = MagicMock()
+        asyncio.run(button(update, ctx))
+
+        update.callback_query.edit_message_text.assert_called_once_with("Cancelled.")
+
+    @patch("handlers.pending_deletes", {})
+    def test_expired_delete(self):
+        from handlers import button
+
+        update = _make_callback_update("delyes_42_999")
+        ctx = MagicMock()
+        asyncio.run(button(update, ctx))
+
+        update.callback_query.edit_message_text.assert_called_once_with("Expired. Try again.")
