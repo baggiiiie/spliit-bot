@@ -12,7 +12,17 @@ import httpx
 from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
-from config import AMOUNT, PAYEES, PAYER, SPLIIT_GROUP_ID, TITLE, PaidFor, pending, pending_deletes, spliit
+from config import (
+    AMOUNT,
+    PAYEES,
+    PAYER,
+    SPLIIT_GROUP_ID,
+    TITLE,
+    PaidFor,
+    pending,
+    pending_deletes,
+    spliit,
+)
 from helpers import (
     build_mention,
     confirm_keyboard,
@@ -27,12 +37,24 @@ from parsing import parse_add_command, parse_with_llm
 logger = logging.getLogger(__name__)
 
 
+async def reply_to_callback(query: Any, text: str) -> None:
+    if query.message:
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception as e:
+            logger.error(f"Failed to clear callback markup: {e}")
+        await query.message.reply_text(
+            text,
+            reply_to_message_id=query.message.message_id,
+        )
+    else:
+        await query.edit_message_text(text)
+
+
 def get_balances(group_id: str) -> dict[str, Any]:
     params_input = {"0": {"json": {"groupId": group_id}}}
     params = {"batch": "1", "input": json.dumps(params_input)}
-    response = httpx.get(
-        "https://spliit.app/api/trpc/groups.balances.list", params=params
-    )
+    response = httpx.get("https://spliit.app/api/trpc/groups.balances.list", params=params)
     return response.json()[0]["result"]["data"]["json"]
 
 
@@ -42,9 +64,7 @@ def get_expenses(group_id: str) -> list[dict[str, Any]]:
         "1": {"json": {"groupId": group_id}},
     }
     params = {"batch": "1", "input": json.dumps(params_input)}
-    response = httpx.get(
-        "https://spliit.app/api/trpc/groups.get,groups.getDetails", params=params
-    )
+    response = httpx.get("https://spliit.app/api/trpc/groups.get,groups.getDetails", params=params)
     data = response.json()
     return data[1]["result"]["data"]["json"]["expenses"]
 
@@ -84,6 +104,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "`/add $title, $amount, baggie neo yoga ricky`\n"
         "↳ bot will ask who paid",
         parse_mode="Markdown",
+        reply_to_message_id=update.message.message_id,
     )
 
 
@@ -91,7 +112,10 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not is_allowed_chat(update) or not update.message:
         return
     if not spliit:
-        await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
+        await update.message.reply_text(
+            "SPLIIT_GROUP_ID not configured.",
+            reply_to_message_id=update.message.message_id,
+        )
         return
 
     try:
@@ -120,23 +144,36 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 amount = r["amount"] / 100
                 lines.append(f"- {from_name} -> {to_name}: {currency}{amount:.2f}")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id,
+        )
     except Exception as e:
         logger.error(f"Failed to get balances: {e}")
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text(
+            f"Error: {e}",
+            reply_to_message_id=update.message.message_id,
+        )
 
 
 async def dellast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
     if not spliit:
-        await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
+        await update.message.reply_text(
+            "SPLIIT_GROUP_ID not configured.",
+            reply_to_message_id=update.message.message_id,
+        )
         return
 
     try:
         expenses = get_expenses(SPLIIT_GROUP_ID)
         if not expenses:
-            await update.message.reply_text("No expenses found.")
+            await update.message.reply_text(
+                "No expenses found.",
+                reply_to_message_id=update.message.message_id,
+            )
             return
 
         latest = expenses[0]
@@ -146,10 +183,7 @@ async def dellast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         id_name, currency = id_to_name_map(spliit)
         payer_name = id_name.get(latest["paidById"], "Unknown")
-        payee_names = [
-            id_name.get(p["participantId"], "Unknown")
-            for p in latest["paidFor"]
-        ]
+        payee_names = [id_name.get(p["participantId"], "Unknown") for p in latest["paidFor"]]
 
         assert update.effective_user
         key = f"{update.effective_user.id}_{update.message.message_id}"
@@ -162,21 +196,32 @@ async def dellast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"Paid by: {payer_name}\n"
             f"Split: {', '.join(payee_names)}",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("Delete", callback_data=f"delyes_{key}"),
-                InlineKeyboardButton("Cancel", callback_data=f"delno_{key}"),
-            ]]),
+            reply_to_message_id=update.message.message_id,
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("Delete", callback_data=f"delyes_{key}"),
+                        InlineKeyboardButton("Cancel", callback_data=f"delno_{key}"),
+                    ]
+                ]
+            ),
         )
     except Exception as e:
         logger.error(f"Failed to get latest expense: {e}")
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text(
+            f"Error: {e}",
+            reply_to_message_id=update.message.message_id,
+        )
 
 
 async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
     if not spliit:
-        await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
+        await update.message.reply_text(
+            "SPLIIT_GROUP_ID not configured.",
+            reply_to_message_id=update.message.message_id,
+        )
         return
 
     try:
@@ -186,17 +231,24 @@ async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"**{group['name']}** ({group['currency']})\n\nParticipants:\n"
             + "\n".join(f"- {n}" for n in names),
             parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id,
         )
     except Exception as e:
         logger.error(f"Failed to get group: {e}")
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text(
+            f"Error: {e}",
+            reply_to_message_id=update.message.message_id,
+        )
 
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
     if not is_allowed_chat(update) or not update.message or not update.effective_user:
         return ConversationHandler.END
     if not spliit:
-        await update.message.reply_text("SPLIIT_GROUP_ID not configured.")
+        await update.message.reply_text(
+            "SPLIIT_GROUP_ID not configured.",
+            reply_to_message_id=update.message.message_id,
+        )
         return ConversationHandler.END
 
     text = (update.message.text or "").strip()
@@ -204,9 +256,8 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
     if text == "/add":
         await update.message.reply_text(
             "Enter expense title:",
-            reply_markup=ForceReply(
-                selective=True, input_field_placeholder="e.g. Dinner"
-            ),
+            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
+            reply_to_message_id=update.message.message_id,
         )
         return TITLE
 
@@ -215,7 +266,10 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
     try:
         participants_map = spliit.get_participants()
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text(
+            f"Error: {e}",
+            reply_to_message_id=update.message.message_id,
+        )
         return ConversationHandler.END
 
     context.user_data["participants_map"] = participants_map
@@ -231,11 +285,16 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             await update.message.reply_text(
                 "Format: `/add title, amount, names`",
                 parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id,
             )
             return ConversationHandler.END
         llm_result = parse_with_llm(raw_text, participant_names)
         if isinstance(llm_result, str):
-            await update.message.reply_text(llm_result, parse_mode="Markdown")
+            await update.message.reply_text(
+                llm_result,
+                parse_mode="Markdown",
+                reply_to_message_id=update.message.message_id,
+            )
             return ConversationHandler.END
         if llm_result:
             expense = llm_result
@@ -245,6 +304,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         await update.message.reply_text(
             "Format: `/add title, amount, names`",
             parse_mode="Markdown",
+            reply_to_message_id=update.message.message_id,
         )
         return ConversationHandler.END
 
@@ -256,14 +316,13 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             f"*{expense.title}* — {expense.amount:.2f}\n\nWho paid?",
             parse_mode="Markdown",
             reply_markup=participant_keyboard(participants_map, "payer_"),
+            reply_to_message_id=update.message.message_id,
         )
         return PAYER
 
     name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
     matched = [
-        (n, pid)
-        for n, pid in ((name, name_map.get(name)) for name in expense.participants)
-        if pid
+        (n, pid) for n, pid in ((name, name_map.get(name)) for name in expense.participants) if pid
     ]
 
     context.user_data["selected_payees"] = [pid for _, (_, pid) in matched]
@@ -273,6 +332,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         f"Split: {', '.join(n for (n, _) in matched)}\n\nWho paid?",
         parse_mode="Markdown",
         reply_markup=participant_keyboard(participants_map, "payer_"),
+        reply_to_message_id=update.message.message_id,
     )
     return PAYER
 
@@ -283,6 +343,7 @@ async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await update.message.reply_text(
         "Enter amount:",
         reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
+        reply_to_message_id=update.message.message_id,
     )
     return AMOUNT
 
@@ -294,9 +355,8 @@ async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not match:
         await update.message.reply_text(
             "Invalid amount. Enter a number:",
-            reply_markup=ForceReply(
-                selective=True, input_field_placeholder="e.g. 50.00"
-            ),
+            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
+            reply_to_message_id=update.message.message_id,
         )
         return AMOUNT
 
@@ -307,12 +367,16 @@ async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
         participants_map = spliit.get_participants()
         context.user_data["participants_map"] = participants_map
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text(
+            f"Error: {e}",
+            reply_to_message_id=update.message.message_id,
+        )
         return ConversationHandler.END
 
     await update.message.reply_text(
         "Who paid?",
         reply_markup=participant_keyboard(participants_map, "payer_"),
+        reply_to_message_id=update.message.message_id,
     )
     return PAYER
 
@@ -412,7 +476,10 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cancel_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message
-    await update.message.reply_text("Cancelled.")
+    await update.message.reply_text(
+        "Cancelled.",
+        reply_to_message_id=update.message.message_id,
+    )
     return ConversationHandler.END
 
 
@@ -426,7 +493,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         key = data[4:]
         info = pending.pop(key, None)
         if not info:
-            await query.edit_message_text("Expired. Try again.")
+            await reply_to_callback(query, "Expired. Try again.")
             return
 
         title, amount, paid_by_id, paid_for, tg_name = info
@@ -439,7 +506,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 paid_for=paid_for,
                 amount=amount,
             )
-            await query.edit_message_text(f"Added: {title}")
+            if query.message:
+                await query.edit_message_reply_markup(reply_markup=None)
 
             id_name, currency = id_to_name_map(spliit)
             payer_name = id_name.get(paid_by_id, "Unknown")
@@ -459,30 +527,34 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"👋 {' '.join(mentions)}"
             )
             assert isinstance(query.message, Message)
-            await query.message.reply_text(msg, parse_mode="HTML")
+            await query.message.reply_text(
+                msg,
+                parse_mode="HTML",
+                reply_to_message_id=query.message.message_id,
+            )
         except Exception as e:
             logger.error(f"Failed to add expense: {e}")
-            await query.edit_message_text(f"Failed: {e}")
+            await reply_to_callback(query, f"Failed: {e}")
 
     elif data.startswith("no_"):
         key = data[3:]
         pending.pop(key, None)
-        await query.edit_message_text("Cancelled.")
+        await reply_to_callback(query, "Cancelled.")
 
     elif data.startswith("delyes_"):
         key = data[7:]
         expense_id = pending_deletes.pop(key, None)
         if not expense_id:
-            await query.edit_message_text("Expired. Try again.")
+            await reply_to_callback(query, "Expired. Try again.")
             return
         try:
             delete_expense(SPLIIT_GROUP_ID, expense_id)
-            await query.edit_message_text("Deleted.")
+            await reply_to_callback(query, "Deleted.")
         except Exception as e:
             logger.error(f"Failed to delete expense: {e}")
-            await query.edit_message_text(f"Failed: {e}")
+            await reply_to_callback(query, f"Failed: {e}")
 
     elif data.startswith("delno_"):
         key = data[6:]
         pending_deletes.pop(key, None)
-        await query.edit_message_text("Cancelled.")
+        await reply_to_callback(query, "Cancelled.")

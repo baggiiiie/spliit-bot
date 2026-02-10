@@ -75,28 +75,36 @@ class TestParseAddCommand:
 class TestPreLLMFilter:
     """Tests for the pre-LLM relevance guard: messages must contain a number or participant name."""
 
-    @pytest.mark.parametrize("text", [
-        "hello how are you",
-        "what's for dinner",
-        "lol nice one",
-        "random gibberish text",
-        "hey what's up",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "hello how are you",
+            "what's for dinner",
+            "lol nice one",
+            "random gibberish text",
+            "hey what's up",
+        ],
+    )
     def test_no_number_no_participant_rejected(self, text):
         import re
+
         raw = re.sub(r"^/add[-_]?bill?\s*", "", f"/add {text}", flags=re.IGNORECASE).strip()
         has_number = bool(re.search(r"\d", raw))
         has_participant = any(n.lower() in raw.lower() for n in PARTICIPANTS)
         assert not has_number and not has_participant
 
-    @pytest.mark.parametrize("text", [
-        "lunch 50",
-        "baggie paid for dinner",
-        "neo owes 20",
-        "100 for groceries",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "lunch 50",
+            "baggie paid for dinner",
+            "neo owes 20",
+            "100 for groceries",
+        ],
+    )
     def test_number_or_participant_accepted(self, text):
         import re
+
         raw = re.sub(r"^/add[-_]?bill?\s*", "", f"/add {text}", flags=re.IGNORECASE).strip()
         has_number = bool(re.search(r"\d", raw))
         has_participant = any(n.lower() in raw.lower() for n in PARTICIPANTS)
@@ -106,6 +114,7 @@ class TestPreLLMFilter:
 class TestPromptTemplate:
     def test_formats_without_error(self):
         from config import PROMPT_TEMPLATE
+
         result = PROMPT_TEMPLATE.format(participants="Alice, Bob", message="lunch 50")
         assert "Alice, Bob" in result
         assert "lunch 50" in result
@@ -171,7 +180,10 @@ def _make_callback_update(data, user_id=42, message_id=999):
     update.effective_user.id = user_id
     update.callback_query.data = data
     update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_reply_markup = AsyncMock()
     update.callback_query.edit_message_text = AsyncMock()
+    update.callback_query.message.message_id = message_id
+    update.callback_query.message.reply_text = AsyncMock()
     return update
 
 
@@ -204,7 +216,10 @@ class TestDellastCmd:
         ctx = MagicMock()
         asyncio.run(dellast_cmd(update, ctx))
 
-        update.message.reply_text.assert_called_once_with("No expenses found.")
+        update.message.reply_text.assert_called_once()
+        call_kwargs = update.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "No expenses found."
 
     @patch("handlers.is_allowed_chat", return_value=False)
     def test_disallowed_chat(self, mock_allowed):
@@ -228,7 +243,10 @@ class TestDellastButton:
         asyncio.run(button(update, ctx))
 
         mock_delete.assert_called_once_with(SPLIIT_GROUP_ID, "exp-123")
-        update.callback_query.edit_message_text.assert_called_once_with("Deleted.")
+        update.callback_query.message.reply_text.assert_called_once()
+        call_kwargs = update.callback_query.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "Deleted."
 
     @patch("handlers.pending_deletes", {"42_999": "exp-123"})
     def test_cancel_delete(self):
@@ -238,7 +256,10 @@ class TestDellastButton:
         ctx = MagicMock()
         asyncio.run(button(update, ctx))
 
-        update.callback_query.edit_message_text.assert_called_once_with("Cancelled.")
+        update.callback_query.message.reply_text.assert_called_once()
+        call_kwargs = update.callback_query.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "Cancelled."
 
     @patch("handlers.pending_deletes", {})
     def test_expired_delete(self):
@@ -248,4 +269,7 @@ class TestDellastButton:
         ctx = MagicMock()
         asyncio.run(button(update, ctx))
 
-        update.callback_query.edit_message_text.assert_called_once_with("Expired. Try again.")
+        update.callback_query.message.reply_text.assert_called_once()
+        call_kwargs = update.callback_query.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "Expired. Try again."

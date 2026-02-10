@@ -22,29 +22,37 @@ def participant_keyboard(
 ) -> InlineKeyboardMarkup:
     selected = selected or set()
     rows = [
-        [InlineKeyboardButton(
-            f"{'✓ ' if pid in selected else ''}{name}",
-            callback_data=f"{prefix}{pid}",
-        )]
+        [
+            InlineKeyboardButton(
+                f"{'✓ ' if pid in selected else ''}{name}",
+                callback_data=f"{prefix}{pid}",
+            )
+        ]
         for name, pid in participants.items()
     ]
     if done_btn:
         all_selected = selected == set(pid for _, pid in participants.items())
-        rows.append([
-            InlineKeyboardButton(
-                "Deselect All" if all_selected else "Select All",
-                callback_data=f"{prefix}all",
-            ),
-            InlineKeyboardButton(done_btn[0], callback_data=done_btn[1]),
-        ])
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "Deselect All" if all_selected else "Select All",
+                    callback_data=f"{prefix}all",
+                ),
+                InlineKeyboardButton(done_btn[0], callback_data=done_btn[1]),
+            ]
+        )
     return InlineKeyboardMarkup(rows)
 
 
 def confirm_keyboard(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("Confirm", callback_data=f"yes_{key}"),
-        InlineKeyboardButton("Cancel", callback_data=f"no_{key}"),
-    ]])
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Confirm", callback_data=f"yes_{key}"),
+                InlineKeyboardButton("Cancel", callback_data=f"no_{key}"),
+            ]
+        ]
+    )
 
 
 def format_confirmation(title: str, amount: float, payer: str, payees: list[str]) -> str:

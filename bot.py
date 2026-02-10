@@ -55,9 +55,7 @@ def main() -> None:
         entry_points=[CommandHandler("add", add_cmd)],
         states={
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_title)],
-            AMOUNT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_amount)
-            ],
+            AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_amount)],
             PAYER: [CallbackQueryHandler(interactive_payer, pattern=r"^payer_")],
             PAYEES: [CallbackQueryHandler(interactive_payees, pattern=r"^payee_")],
         },

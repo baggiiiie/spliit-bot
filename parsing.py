@@ -41,20 +41,14 @@ def parse_add_command(
         return ParsedExpense(title=title, amount=amount)
 
     names_text = parts[2].lower()
-    matched = [
-        name for name in known_participants if name.lower() in names_text
-    ]
+    matched = [name for name in known_participants if name.lower() in names_text]
     if not matched:
         return ParsedExpense(title=title, amount=amount)
 
-    return ParsedExpense(
-        title=title, amount=amount, participants=[n.lower() for n in matched]
-    )
+    return ParsedExpense(title=title, amount=amount, participants=[n.lower() for n in matched])
 
 
-def parse_with_llm(
-    text: str, participant_names: list[str]
-) -> ParsedExpense | str | None:
+def parse_with_llm(text: str, participant_names: list[str]) -> ParsedExpense | str | None:
     prompt = PROMPT_TEMPLATE.format(
         participants=", ".join(participant_names),
         message=text,
@@ -74,7 +68,10 @@ def parse_with_llm(
 
         json_match = re.search(r"\{[^}]+\}", raw)
         if not json_match:
-            return "Your request has been rejected. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
+            return (
+                "Your request has been rejected. Please use the format:\n"
+                "`/add $title, $amount, with p1, p2, and p3`"
+            )
         data = json.loads(json_match.group())
 
         if "error" in data:
@@ -86,7 +83,10 @@ def parse_with_llm(
         title = data.get("title")
         amount = data.get("amount")
         if not title or not isinstance(amount, (int, float)) or amount <= 0:
-            return "Your request has been rejected. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
+            return (
+                "Your request has been rejected. Please use the format:\n"
+                "`/add $title, $amount, with p1, p2, and p3`"
+            )
 
         participants = data.get("participants")
         if isinstance(participants, list) and participants:
@@ -100,7 +100,10 @@ def parse_with_llm(
         return ParsedExpense(title=title, amount=float(amount))
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"LLM JSON parse failed: {e}")
-        return "Your request has been rejected. Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
+        return (
+            "Your request has been rejected. Please use the format:\n"
+            "`/add $title, $amount, with p1, p2, and p3`"
+        )
     except subprocess.TimeoutExpired:
         logger.error("LLM request timed out")
         return "Error with LLM. Please try again later."
