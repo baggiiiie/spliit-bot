@@ -73,7 +73,10 @@ def parse_with_llm(
                     "temperature": 0,
                     "response_format": {"type": "json_object"},
                     "messages": [
-                        {"role": "system", "content": "You are a JSON-only assistant. Always respond with a single JSON object and nothing else."},
+                        {
+                            "role": "system",
+                            "content": "You are a JSON-only assistant. Always respond with a single JSON object and nothing else.",
+                        },
                         {"role": "user", "content": prompt},
                     ],
                 },

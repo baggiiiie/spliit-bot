@@ -340,7 +340,11 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         llm_result, raw_response = parse_with_llm(raw_text, participant_names)
         if isinstance(llm_result, str):
             await _notify_admin_llm_error(
-                context, update.effective_user, raw_text, llm_result, raw_response,
+                context,
+                update.effective_user,
+                raw_text,
+                llm_result,
+                raw_response,
             )
             await update.message.reply_text(
                 llm_result,
@@ -421,8 +425,11 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
     # All fields present
     text, markup = _store_pending_expense(
-        context.user_data, update.effective_user.id, update.message.message_id,
-        tg_display_name(update), context.user_data["selected_payees"],
+        context.user_data,
+        update.effective_user.id,
+        update.message.message_id,
+        tg_display_name(update),
+        context.user_data["selected_payees"],
     )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
     return ConversationHandler.END
@@ -488,8 +495,11 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if pre_selected:
         assert query.message and update.effective_user
         text, markup = _store_pending_expense(
-            context.user_data, update.effective_user.id, query.message.message_id,
-            tg_display_name(update), pre_selected,
+            context.user_data,
+            update.effective_user.id,
+            query.message.message_id,
+            tg_display_name(update),
+            pre_selected,
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         return ConversationHandler.END
@@ -518,8 +528,11 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         assert query.message
         text, markup = _store_pending_expense(
-            context.user_data, update.effective_user.id, query.message.message_id,
-            tg_display_name(update), selected,
+            context.user_data,
+            update.effective_user.id,
+            query.message.message_id,
+            tg_display_name(update),
+            selected,
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         return ConversationHandler.END

@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SPLIIT_GROUP_ID = os.getenv("SPLIIT_GROUP_ID", "")
 ADMIN_TELEGRAM_USER_ID = os.getenv("ADMIN_TELEGRAM_USER_ID", "")
-ALLOWED_TELEGRAM_GROUP_ID = os.getenv("ALLOWED_TELEGRAM_GROUP_ID", "")
+ALLOWED_TELEGRAM_GROUP_ID = [
+    x.strip() for x in os.getenv("ALLOWED_TELEGRAM_GROUP_ID", "").split(",") if x.strip()
+]
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")

@@ -92,12 +92,7 @@ def is_allowed_chat(update: Update) -> bool:
     chat_id = str(update.effective_chat.id) if update.effective_chat else ""
     user_id = str(update.effective_user.id) if update.effective_user else ""
 
-    print(f"Chat ID: {chat_id}, User ID: {user_id}")
-    print(
-        f"chat id {chat_id} is ALLOWED_TELEGRAM_GROUP_ID {ALLOWED_TELEGRAM_GROUP_ID}:",
-        chat_id == ALLOWED_TELEGRAM_GROUP_ID,
-    )
     if ADMIN_TELEGRAM_USER_ID and user_id == ADMIN_TELEGRAM_USER_ID:
         return True
 
-    return bool(ALLOWED_TELEGRAM_GROUP_ID) and chat_id == ALLOWED_TELEGRAM_GROUP_ID
+    return chat_id in ALLOWED_TELEGRAM_GROUP_ID

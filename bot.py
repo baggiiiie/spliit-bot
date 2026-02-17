@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Spliit Telegram Bot - Manage Spliit expenses via Telegram."""
 
+import traceback
+
+from telegram import Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     ConversationHandler,
     MessageHandler,
     filters,
 )
 
 from config import (
+    ADMIN_TELEGRAM_USER_ID,
     AMOUNT,
     BOT_MODE,
     PAYEES,
@@ -37,12 +42,40 @@ from handlers import (
 )
 
 
+async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message and update.message.from_user:
+        logger.info(
+            f"chat_id={update.message.chat_id} "
+            f"user_id={update.message.from_user.id} "
+            f"message_id={update.message.message_id}"
+        )
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.error:
+        return
+    logger.error(f"Exception: {context.error}")
+    tb = traceback.format_exc()
+    logger.error(tb)
+    if ADMIN_TELEGRAM_USER_ID:
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_TELEGRAM_USER_ID,
+                text=f"⚠️ Bot error:\n<pre>{tb}</pre>",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify admin: {e}")
+
+
 def main() -> None:
     if not TELEGRAM_BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not set")
         return
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.ALL, log_message), group=-1)
+    app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("group", group_cmd))
