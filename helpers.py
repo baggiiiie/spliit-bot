@@ -6,7 +6,7 @@ from spliit import Spliit
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import ALLOWED_CHAT_ID, ALLOWED_USER_ID, SPLIIT_TO_TELEGRAM
+from config import ADMIN_TELEGRAM_USER_ID, ALLOWED_TELEGRAM_GROUP_ID, SPLIIT_TO_TELEGRAM
 
 
 def id_to_name_map(client: Spliit) -> tuple[dict[str, str], str]:
@@ -89,6 +89,10 @@ async def build_mention(name: str, context: ContextTypes.DEFAULT_TYPE) -> str:
 
 
 def is_allowed_chat(update: Update) -> bool:
-    chat_id = update.effective_chat.id if update.effective_chat else None
-    user_id = update.effective_user.id if update.effective_user else None
-    return str(chat_id) == ALLOWED_CHAT_ID or str(user_id) == ALLOWED_USER_ID
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+
+    if ADMIN_TELEGRAM_USER_ID and user_id == ADMIN_TELEGRAM_USER_ID:
+        return True
+
+    return bool(ALLOWED_TELEGRAM_GROUP_ID) and chat_id == ALLOWED_TELEGRAM_GROUP_ID

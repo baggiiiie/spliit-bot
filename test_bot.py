@@ -194,6 +194,59 @@ def _make_callback_update(data, user_id=42, message_id=999):
     return update
 
 
+class TestIsAllowedChat:
+    def test_admin_can_talk_in_any_chat(self, monkeypatch):
+        import importlib
+
+        monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "42")
+        monkeypatch.setenv("ALLOWED_TELEGRAM_GROUP_ID", "123")
+        monkeypatch.delenv("ALLOWED_CHAT_ID", raising=False)
+        monkeypatch.delenv("ALLOWED_USER_ID", raising=False)
+
+        import config
+        import helpers
+
+        importlib.reload(config)
+        importlib.reload(helpers)
+
+        update = _make_update(chat_id="999", user_id=42)
+        assert helpers.is_allowed_chat(update)
+
+    def test_anyone_can_talk_in_allowed_group(self, monkeypatch):
+        import importlib
+
+        monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "777")
+        monkeypatch.setenv("ALLOWED_TELEGRAM_GROUP_ID", "123")
+        monkeypatch.delenv("ALLOWED_CHAT_ID", raising=False)
+        monkeypatch.delenv("ALLOWED_USER_ID", raising=False)
+
+        import config
+        import helpers
+
+        importlib.reload(config)
+        importlib.reload(helpers)
+
+        update = _make_update(chat_id="123", user_id=42)
+        assert helpers.is_allowed_chat(update)
+
+    def test_others_cannot_talk_outside_allowed_group(self, monkeypatch):
+        import importlib
+
+        monkeypatch.setenv("ADMIN_TELEGRAM_USER_ID", "777")
+        monkeypatch.setenv("ALLOWED_TELEGRAM_GROUP_ID", "123")
+        monkeypatch.delenv("ALLOWED_CHAT_ID", raising=False)
+        monkeypatch.delenv("ALLOWED_USER_ID", raising=False)
+
+        import config
+        import helpers
+
+        importlib.reload(config)
+        importlib.reload(helpers)
+
+        update = _make_update(chat_id="999", user_id=42)
+        assert not helpers.is_allowed_chat(update)
+
+
 class TestDellastCmd:
     @patch("handlers.id_to_name_map", return_value=(FAKE_ID_NAME, "$"))
     @patch("handlers.get_expenses", return_value=FAKE_EXPENSES)
