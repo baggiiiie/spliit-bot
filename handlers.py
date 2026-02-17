@@ -19,7 +19,6 @@ from config import (
     PAYER,
     SPLIIT_GROUP_ID,
     TITLE,
-    PaidFor,
     pending,
     pending_deletes,
     spliit,
@@ -37,6 +36,8 @@ from parsing import parse_add_command, parse_with_llm
 
 logger = logging.getLogger(__name__)
 
+FORMAT_HELP = "Format: `/add title, amount, names`"
+
 
 async def reply_to_callback(query: Any, text: str) -> None:
     if query.message:
@@ -50,6 +51,53 @@ async def reply_to_callback(query: Any, text: str) -> None:
         )
     else:
         await query.edit_message_text(text)
+
+
+def _store_pending_expense(
+    user_data: dict,
+    user_id: int,
+    message_id: int,
+    tg_name: str,
+    payee_ids: list[str],
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build confirmation for a pending expense and store it."""
+    title = user_data["expense_title"]
+    amount = user_data["expense_amount"]
+    payer_id = user_data["payer_id"]
+    payer_name = user_data["payer_name"]
+    participants_map = user_data["participants_map"]
+    reverse = {pid: name for name, pid in participants_map.items()}
+    payee_names = [reverse[pid] for pid in payee_ids]
+
+    key = f"{user_id}_{message_id}"
+    pending[key] = (title, int(amount * 100), payer_id, [(pid, 1) for pid in payee_ids], tg_name)
+
+    return format_confirmation(title, amount, payer_name, payee_names), confirm_keyboard(key)
+
+
+async def _notify_admin_llm_error(
+    context: ContextTypes.DEFAULT_TYPE,
+    user: Any,
+    raw_text: str,
+    error: str,
+    raw_response: str | None,
+) -> None:
+    if not ADMIN_TELEGRAM_USER_ID:
+        return
+    try:
+        user_info = f"@{user.username}" if user.username else f"ID: {user.id}"
+        await context.bot.send_message(
+            chat_id=ADMIN_TELEGRAM_USER_ID,
+            text=(
+                f"⚠️ <b>LLM Parsing failed</b> for {html.escape(user_info)}\n\n"
+                f"<b>Input:</b> <code>{html.escape(str(raw_text))}</code>\n"
+                f"<b>Error:</b> {html.escape(str(error))}\n"
+                f"<b>Raw Response:</b>\n<pre>{html.escape(str(raw_response))}</pre>"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logger.error(f"Failed to send error report to admin: {e}")
 
 
 def get_balances(group_id: str) -> dict[str, Any]:
@@ -284,29 +332,16 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         has_participant = any(n.lower() in raw_text.lower() for n in participant_names)
         if not has_number and not has_participant:
             await update.message.reply_text(
-                "Format: `/add title, amount, names`",
+                FORMAT_HELP,
                 parse_mode="Markdown",
                 reply_to_message_id=update.message.message_id,
             )
             return ConversationHandler.END
         llm_result, raw_response = parse_with_llm(raw_text, participant_names)
         if isinstance(llm_result, str):
-            if ADMIN_TELEGRAM_USER_ID:
-                try:
-                    user_info = f"@{update.effective_user.username}" if update.effective_user.username else f"ID: {update.effective_user.id}"
-                    await context.bot.send_message(
-                        chat_id=ADMIN_TELEGRAM_USER_ID,
-                        text=(
-                            f"⚠️ <b>LLM Parsing failed</b> for {html.escape(user_info)}\n\n"
-                            f"<b>Input:</b> <code>{html.escape(str(raw_text))}</code>\n"
-                            f"<b>Error:</b> {html.escape(str(llm_result))}\n"
-                            f"<b>Raw Response:</b>\n<pre>{html.escape(str(raw_response))}</pre>"
-                        ),
-                        parse_mode="HTML",
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send error report to admin: {e}")
-
+            await _notify_admin_llm_error(
+                context, update.effective_user, raw_text, llm_result, raw_response,
+            )
             await update.message.reply_text(
                 llm_result,
                 parse_mode="Markdown",
@@ -319,7 +354,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
     if not expense:
         await update.message.reply_text(
-            "Format: `/add title, amount, names`",
+            FORMAT_HELP,
             parse_mode="Markdown",
             reply_to_message_id=update.message.message_id,
         )
@@ -341,7 +376,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         ]
         context.user_data["selected_payees"] = [pid for _, (_, pid) in matched]
 
-    # Flow Control: Find first missing field
+    # Flow control: prompt for first missing field
     if not context.user_data.get("expense_title"):
         await update.message.reply_text(
             "Enter expense title:",
@@ -384,24 +419,12 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         )
         return PAYEES
 
-    # If everything is already present
-    title = context.user_data["expense_title"]
-    amount = context.user_data["expense_amount"]
-    payer_id = context.user_data["payer_id"]
-    payer_name = context.user_data["payer_name"]
-    selected_payees = context.user_data["selected_payees"]
-    reverse = {pid: name for name, pid in participants_map.items()}
-    payee_names = [reverse[pid] for pid in selected_payees]
-    paid_for: PaidFor = [(pid, 1) for pid in selected_payees]
-
-    key = f"{update.effective_user.id}_{update.message.message_id}"
-    pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_display_name(update))
-
-    await update.message.reply_text(
-        format_confirmation(title, amount, payer_name, payee_names),
-        parse_mode="Markdown",
-        reply_markup=confirm_keyboard(key),
+    # All fields present
+    text, markup = _store_pending_expense(
+        context.user_data, update.effective_user.id, update.message.message_id,
+        tg_display_name(update), context.user_data["selected_payees"],
     )
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
     return ConversationHandler.END
 
 
@@ -463,20 +486,12 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     pre_selected = context.user_data.get("selected_payees", [])
     if pre_selected:
-        title = context.user_data["expense_title"]
-        amount = context.user_data["expense_amount"]
-        paid_for: PaidFor = [(pid, 1) for pid in pre_selected]
-        payee_names = [reverse[pid] for pid in pre_selected]
-
         assert query.message and update.effective_user
-        key = f"{update.effective_user.id}_{query.message.message_id}"
-        pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_display_name(update))
-
-        await query.edit_message_text(
-            format_confirmation(title, amount, reverse[payer_id], payee_names),
-            parse_mode="Markdown",
-            reply_markup=confirm_keyboard(key),
+        text, markup = _store_pending_expense(
+            context.user_data, update.effective_user.id, query.message.message_id,
+            tg_display_name(update), pre_selected,
         )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         return ConversationHandler.END
 
     context.user_data["selected_payees"] = []
@@ -501,25 +516,12 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.answer("Select at least one person", show_alert=True)
             return PAYEES
 
-        title = context.user_data["expense_title"]
-        amount = context.user_data["expense_amount"]
-        payer_id = context.user_data["payer_id"]
-        payer_name = context.user_data["payer_name"]
-        participants_map = context.user_data["participants_map"]
-        reverse = {pid: name for name, pid in participants_map.items()}
-
-        paid_for: PaidFor = [(pid, 1) for pid in selected]
-        payee_names = [reverse[pid] for pid in selected]
-
         assert query.message
-        key = f"{update.effective_user.id}_{query.message.message_id}"
-        pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_display_name(update))
-
-        await query.edit_message_text(
-            format_confirmation(title, amount, payer_name, payee_names),
-            parse_mode="Markdown",
-            reply_markup=confirm_keyboard(key),
+        text, markup = _store_pending_expense(
+            context.user_data, update.effective_user.id, query.message.message_id,
+            tg_display_name(update), selected,
         )
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         return ConversationHandler.END
 
     payee_id = data[6:]
@@ -581,7 +583,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payer_name = id_name.get(paid_by_id, "Unknown")
             payee_names = [id_name.get(pid, "Unknown") for pid, _ in paid_for]
 
-            involved = set([*payee_names, payer_name])
+            involved = {*payee_names, payer_name}
             mentions = [await build_mention(n, context) for n in involved]
 
             amount_display = amount / 100

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Spliit Telegram Bot - Manage Spliit expenses via Telegram."""
 
-from __future__ import annotations
-
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -69,15 +67,12 @@ def main() -> None:
             logger.error("WEBHOOK_URL not set for webhook mode")
             return
 
-        webhook_path = "/webhook"
-        full_webhook_url = f"{WEBHOOK_URL.rstrip('/')}{webhook_path}"
-
         logger.info(f"Bot starting in webhook mode on port {WEBHOOK_PORT}...")
         app.run_webhook(
             listen="0.0.0.0",
             port=WEBHOOK_PORT,
-            url_path=webhook_path,
-            webhook_url=full_webhook_url,
+            url_path="/webhook",
+            webhook_url=f"{WEBHOOK_URL.rstrip('/')}/webhook",
             secret_token=WEBHOOK_SECRET or None,
         )
     else:
