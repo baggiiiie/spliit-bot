@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ParsedExpense:
-    title: str
-    amount: float
+    title: str | None = None
+    amount: float | None = None
+    payer: str | None = None
     participants: list[str] | None = None
 
 
@@ -49,16 +50,19 @@ def parse_add_command(
     return ParsedExpense(title=title, amount=amount, participants=[n.lower() for n in matched])
 
 
-def parse_with_llm(text: str, participant_names: list[str]) -> ParsedExpense | str | None:
+def parse_with_llm(
+    text: str, participant_names: list[str]
+) -> tuple[ParsedExpense | str | None, str | None]:
     prompt = PROMPT_TEMPLATE.format(
         participants=", ".join(participant_names),
         message=text,
     )
 
+    raw_response = None
     try:
         if not GROQ_API_KEY:
             logger.error("GROQ_API_KEY is not set")
-            return "Error with LLM. Please try again later."
+            return "Error with LLM. Please try again later.", None
 
         with httpx.Client(timeout=30) as client:
             resp = client.post(
@@ -67,61 +71,80 @@ def parse_with_llm(text: str, participant_names: list[str]) -> ParsedExpense | s
                 json={
                     "model": GROQ_MODEL,
                     "temperature": 0,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": "You are a JSON-only assistant. Always respond with a single JSON object and nothing else."},
+                        {"role": "user", "content": prompt},
+                    ],
                 },
             )
 
         if resp.status_code >= 400:
             logger.error(f"Groq API error: {resp.status_code} {resp.text}")
-            return "Error with LLM. Please try again later."
+            return "Error with LLM. Please try again later.", resp.text
 
         payload = resp.json()
-        raw = payload.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        raw_response = payload.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
-        json_match = re.search(r"\{[^}]+\}", raw)
+        json_match = re.search(r"\{[^}]+\}", raw_response)
         if not json_match:
             return (
                 "Your request has been rejected. Please use the format:\n"
-                "`/add $title, $amount, with p1, p2, and p3`"
+                "`/add $title, $amount, with p1, p2, and p3`",
+                raw_response,
             )
         data = json.loads(json_match.group())
 
         if "error" in data:
             return (
                 "Could not understand the expense. Please use the format:\n"
-                "`/add $title, $amount, with p1, p2, and p3`"
+                "`/add $title, $amount, with p1, p2, and p3`",
+                raw_response,
             )
 
         title = data.get("title")
         amount = data.get("amount")
-        if not title or not isinstance(amount, (int, float)) or amount <= 0:
-            return (
-                "Your request has been rejected. Please use the format:\n"
-                "`/add $title, $amount, with p1, p2, and p3`"
-            )
-
+        payer = data.get("payer")
         participants = data.get("participants")
+
+        parsed = ParsedExpense()
+        if title:
+            parsed.title = title
+        if isinstance(amount, (int, float)) and amount > 0:
+            parsed.amount = float(amount)
+
+        known_lower = {n.lower(): n for n in participant_names}
+
+        if payer and isinstance(payer, str):
+            if payer.lower() in known_lower:
+                parsed.payer = known_lower[payer.lower()]
+
         if isinstance(participants, list) and participants:
-            known_lower = {n.lower(): n for n in participant_names}
             matched = [known_lower[p.lower()] for p in participants if p.lower() in known_lower]
             if matched:
-                return ParsedExpense(
-                    title=title, amount=float(amount), participants=[n.lower() for n in matched]
-                )
+                parsed.participants = [n.lower() for n in matched]
 
-        return ParsedExpense(title=title, amount=float(amount))
+        if not parsed.title and not parsed.amount and not parsed.payer and not parsed.participants:
+            return (
+                "Could not understand the expense. Please use the format:\n"
+                "`/add $title, $amount, with p1, p2, and p3`",
+                raw_response,
+            )
+
+        return parsed, raw_response
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"LLM JSON parse failed: {e}")
         return (
             "Your request has been rejected. Please use the format:\n"
-            "`/add $title, $amount, with p1, p2, and p3`"
+            "`/add $title, $amount, with p1, p2, and p3`",
+            raw_response,
         )
     except httpx.TimeoutException:
         logger.error("Groq request timed out")
-        return "Error with LLM. Please try again later."
+        return "Error with LLM. Please try again later.", None
     except httpx.HTTPError as e:
         logger.error(f"Groq request failed: {e}")
-        return "Error with LLM. Please try again later."
+        return "Error with LLM. Please try again later.", None
     except Exception as e:
         logger.error(f"LLM parse failed: {e}")
-        return "Error with LLM. Please try again later."
+        return "Error with LLM. Please try again later.", raw_response

@@ -1,14 +1,19 @@
 Extract the expense from the user message as JSON.
 Return ONLY a JSON object with these fields:
-{{"title": "...", "amount": 12.50, "participants": ["name1", "name2"]}}
+{{"title": "...", "amount": 12.50, "payer": "...", "participants": ["name1", "name2"]}}
 
 Rules:
 - Available participants (use these exact names): {participants}
+- title: string or null if unknown
+- amount: number or null if unknown
+- payer: name from the list above or null if unknown
+- participants: list of names from the list above or null if unknown
 - Include all participants who split the cost.
-- amount must be a positive number.
-- participants must be a non-empty list.
-- Return ONLY the JSON object, no other text.
 - If the message is not about an expense or spending money (e.g. greetings, questions, jokes, random text), return exactly: {{"error": "not an expense"}}
-- If you cannot parse a valid expense, return exactly: {{"error": "reason"}}
+- Return ONLY the JSON object, no other text.
+
+Example:
+- User message: `/add CNY ikea lunch with ricky, baggie paid 32`
+- Extracted expense: {{"title": "CNY ikea lunch", "amount": 32, "payer": "baggie", "participants": ["ricky", "baggie"]}}
 
 User message: {message}

@@ -13,6 +13,7 @@ from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Mes
 from telegram.ext import ContextTypes, ConversationHandler
 
 from config import (
+    ADMIN_TELEGRAM_USER_ID,
     AMOUNT,
     PAYEES,
     PAYER,
@@ -288,8 +289,24 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
                 reply_to_message_id=update.message.message_id,
             )
             return ConversationHandler.END
-        llm_result = parse_with_llm(raw_text, participant_names)
+        llm_result, raw_response = parse_with_llm(raw_text, participant_names)
         if isinstance(llm_result, str):
+            if ADMIN_TELEGRAM_USER_ID:
+                try:
+                    user_info = f"@{update.effective_user.username}" if update.effective_user.username else f"ID: {update.effective_user.id}"
+                    await context.bot.send_message(
+                        chat_id=ADMIN_TELEGRAM_USER_ID,
+                        text=(
+                            f"⚠️ <b>LLM Parsing failed</b> for {html.escape(user_info)}\n\n"
+                            f"<b>Input:</b> <code>{html.escape(str(raw_text))}</code>\n"
+                            f"<b>Error:</b> {html.escape(str(llm_result))}\n"
+                            f"<b>Raw Response:</b>\n<pre>{html.escape(str(raw_response))}</pre>"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send error report to admin: {e}")
+
             await update.message.reply_text(
                 llm_result,
                 parse_mode="Markdown",
@@ -308,33 +325,84 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         )
         return ConversationHandler.END
 
-    context.user_data["expense_title"] = expense.title
-    context.user_data["expense_amount"] = expense.amount
+    if expense.title:
+        context.user_data["expense_title"] = expense.title
+    if expense.amount:
+        context.user_data["expense_amount"] = expense.amount
+    if expense.payer:
+        context.user_data["payer_id"] = participants_map[expense.payer]
+        context.user_data["payer_name"] = expense.payer
+    if expense.participants:
+        name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
+        matched = [
+            (n, pid)
+            for n, pid in ((name, name_map.get(name)) for name in expense.participants)
+            if pid
+        ]
+        context.user_data["selected_payees"] = [pid for _, (_, pid) in matched]
 
-    if expense.participants is None:
+    # Flow Control: Find first missing field
+    if not context.user_data.get("expense_title"):
         await update.message.reply_text(
-            f"*{expense.title}* — {expense.amount:.2f}\n\nWho paid?",
+            "Enter expense title:",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
+            reply_to_message_id=update.message.message_id,
+        )
+        return TITLE
+
+    if not context.user_data.get("expense_amount"):
+        await update.message.reply_text(
+            f"*{context.user_data['expense_title']}*\nEnter amount:",
+            parse_mode="Markdown",
+            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
+            reply_to_message_id=update.message.message_id,
+        )
+        return AMOUNT
+
+    if not context.user_data.get("payer_id"):
+        title = context.user_data["expense_title"]
+        amount = context.user_data["expense_amount"]
+        await update.message.reply_text(
+            f"*{title}* — {amount:.2f}\n\nWho paid?",
             parse_mode="Markdown",
             reply_markup=participant_keyboard(participants_map, "payer_"),
             reply_to_message_id=update.message.message_id,
         )
         return PAYER
 
-    name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
-    matched = [
-        (n, pid) for n, pid in ((name, name_map.get(name)) for name in expense.participants) if pid
-    ]
+    if not context.user_data.get("selected_payees"):
+        title = context.user_data["expense_title"]
+        amount = context.user_data["expense_amount"]
+        payer_name = context.user_data["payer_name"]
+        await update.message.reply_text(
+            f"*{title}* — {amount:.2f}\nPaid by: {payer_name}\n\nSelect who to split with:",
+            parse_mode="Markdown",
+            reply_markup=participant_keyboard(
+                participants_map, "payee_", done_btn=("< Done >", "payee_done")
+            ),
+            reply_to_message_id=update.message.message_id,
+        )
+        return PAYEES
 
-    context.user_data["selected_payees"] = [pid for _, (_, pid) in matched]
+    # If everything is already present
+    title = context.user_data["expense_title"]
+    amount = context.user_data["expense_amount"]
+    payer_id = context.user_data["payer_id"]
+    payer_name = context.user_data["payer_name"]
+    selected_payees = context.user_data["selected_payees"]
+    reverse = {pid: name for name, pid in participants_map.items()}
+    payee_names = [reverse[pid] for pid in selected_payees]
+    paid_for: PaidFor = [(pid, 1) for pid in selected_payees]
+
+    key = f"{update.effective_user.id}_{update.message.message_id}"
+    pending[key] = (title, int(amount * 100), payer_id, paid_for, tg_display_name(update))
 
     await update.message.reply_text(
-        f"*{expense.title}* — {expense.amount:.2f}\n"
-        f"Split: {', '.join(n for (n, _) in matched)}\n\nWho paid?",
+        format_confirmation(title, amount, payer_name, payee_names),
         parse_mode="Markdown",
-        reply_markup=participant_keyboard(participants_map, "payer_"),
-        reply_to_message_id=update.message.message_id,
+        reply_markup=confirm_keyboard(key),
     )
-    return PAYER
+    return ConversationHandler.END
 
 
 async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
