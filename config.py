@@ -21,8 +21,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 SPLIIT_GROUP_ID = os.getenv("SPLIIT_GROUP_ID", "")
 ALLOWED_CHAT_ID = os.getenv("ALLOWED_CHAT_ID", "")
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID", "")
-OPENCODE_CLI = os.getenv("OPENCODE_CLI", "opencode")
-OPENCODE_MODEL = os.getenv("OPENCODE_MODEL", "opencode/kimi-k2.5-free")
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_API_BASE_URL = os.getenv("GROQ_API_BASE_URL", "https://api.groq.com/openai/v1")
 
 BOT_MODE = os.getenv("BOT_MODE", "polling").lower()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")

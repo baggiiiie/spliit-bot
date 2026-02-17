@@ -122,6 +122,13 @@ class TestPromptTemplate:
 
 @pytest.mark.llm
 class TestParseWithLLM:
+    @pytest.fixture(autouse=True)
+    def _requires_groq_api_key(self):
+        from config import GROQ_API_KEY
+
+        if not GROQ_API_KEY:
+            pytest.skip("GROQ_API_KEY is not set")
+
     def test_simple_expense(self):
         result = parse_with_llm("dinner cost 100 split between baggie and neo", PARTICIPANTS)
         assert isinstance(result, ParsedExpense)

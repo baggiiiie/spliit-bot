@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-import subprocess
 from dataclasses import dataclass
 
-from config import OPENCODE_CLI, OPENCODE_MODEL, PROMPT_TEMPLATE
+import httpx
+
+from config import GROQ_API_BASE_URL, GROQ_API_KEY, GROQ_MODEL, PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +56,27 @@ def parse_with_llm(text: str, participant_names: list[str]) -> ParsedExpense | s
     )
 
     try:
-        result = subprocess.run(
-            [OPENCODE_CLI, "run", "-m", OPENCODE_MODEL, prompt],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode != 0:
-            logger.error(f"opencode CLI failed: {result.stderr}")
+        if not GROQ_API_KEY:
+            logger.error("GROQ_API_KEY is not set")
             return "Error with LLM. Please try again later."
-        raw = result.stdout.strip()
+
+        with httpx.Client(timeout=30) as client:
+            resp = client.post(
+                f"{GROQ_API_BASE_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                json={
+                    "model": GROQ_MODEL,
+                    "temperature": 0,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+
+        if resp.status_code >= 400:
+            logger.error(f"Groq API error: {resp.status_code} {resp.text}")
+            return "Error with LLM. Please try again later."
+
+        payload = resp.json()
+        raw = payload.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
         json_match = re.search(r"\{[^}]+\}", raw)
         if not json_match:
@@ -104,8 +116,11 @@ def parse_with_llm(text: str, participant_names: list[str]) -> ParsedExpense | s
             "Your request has been rejected. Please use the format:\n"
             "`/add $title, $amount, with p1, p2, and p3`"
         )
-    except subprocess.TimeoutExpired:
-        logger.error("LLM request timed out")
+    except httpx.TimeoutException:
+        logger.error("Groq request timed out")
+        return "Error with LLM. Please try again later."
+    except httpx.HTTPError as e:
+        logger.error(f"Groq request failed: {e}")
         return "Error with LLM. Please try again later."
     except Exception as e:
         logger.error(f"LLM parse failed: {e}")

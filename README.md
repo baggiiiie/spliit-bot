@@ -9,7 +9,7 @@ Telegram bot for managing [Spliit](https://spliit.app) expenses.
 3. Configure:
    ```bash
    cp .env.example .env
-   # Edit .env with your TELEGRAM_BOT_TOKEN and SPLIIT_GROUP_ID
+   # Edit .env with your TELEGRAM_BOT_TOKEN, SPLIIT_GROUP_ID, and GROQ_API_KEY
    ```
 4. Install and run:
    ```bash
