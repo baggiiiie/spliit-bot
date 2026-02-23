@@ -13,6 +13,11 @@ from config import GROQ_API_BASE_URL, GROQ_API_KEY, GROQ_MODEL, PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
+_FORMAT_HINT = "Please use the format:\n`/add $title, $amount, with p1, p2, and p3`"
+_REJECTED_MSG = f"Your request has been rejected. {_FORMAT_HINT}"
+_NOT_UNDERSTOOD_MSG = f"Could not understand the expense. {_FORMAT_HINT}"
+_LLM_ERROR_MSG = "Error with LLM. Please try again later."
+
 
 @dataclass
 class ParsedExpense:
@@ -62,7 +67,7 @@ def parse_with_llm(
     try:
         if not GROQ_API_KEY:
             logger.error("GROQ_API_KEY is not set")
-            return "Error with LLM. Please try again later.", None
+            return _LLM_ERROR_MSG, None
 
         with httpx.Client(timeout=30) as client:
             resp = client.post(
@@ -84,70 +89,56 @@ def parse_with_llm(
 
         if resp.status_code >= 400:
             logger.error(f"Groq API error: {resp.status_code} {resp.text}")
-            return "Error with LLM. Please try again later.", resp.text
+            return _LLM_ERROR_MSG, resp.text
 
         payload = resp.json()
         raw_response = payload.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
         json_match = re.search(r"\{[^}]+\}", raw_response)
         if not json_match:
-            return (
-                "Your request has been rejected. Please use the format:\n"
-                "`/add $title, $amount, with p1, p2, and p3`",
-                raw_response,
-            )
+            return _REJECTED_MSG, raw_response
         data = json.loads(json_match.group())
 
         if "error" in data:
-            return (
-                "Could not understand the expense. Please use the format:\n"
-                "`/add $title, $amount, with p1, p2, and p3`",
-                raw_response,
-            )
+            return _NOT_UNDERSTOOD_MSG, raw_response
 
-        title = data.get("title")
+        known_lower = {n.lower(): n for n in participant_names}
+
         amount = data.get("amount")
         payer = data.get("payer")
         participants = data.get("participants")
 
-        parsed = ParsedExpense()
-        if title:
-            parsed.title = title
-        if isinstance(amount, (int, float)) and amount > 0:
-            parsed.amount = float(amount)
+        matched_payer = (
+            known_lower[payer.lower()]
+            if isinstance(payer, str) and payer.lower() in known_lower
+            else None
+        )
+        matched_payees = (
+            [known_lower[p.lower()].lower() for p in participants if p.lower() in known_lower]
+            if isinstance(participants, list) and participants
+            else None
+        ) or None  # convert empty list to None
 
-        known_lower = {n.lower(): n for n in participant_names}
-
-        if payer and isinstance(payer, str):
-            if payer.lower() in known_lower:
-                parsed.payer = known_lower[payer.lower()]
-
-        if isinstance(participants, list) and participants:
-            matched = [known_lower[p.lower()] for p in participants if p.lower() in known_lower]
-            if matched:
-                parsed.participants = [n.lower() for n in matched]
+        parsed = ParsedExpense(
+            title=data.get("title") or None,
+            amount=float(amount) if isinstance(amount, (int, float)) and amount > 0 else None,
+            payer=matched_payer,
+            participants=matched_payees,
+        )
 
         if not parsed.title and not parsed.amount and not parsed.payer and not parsed.participants:
-            return (
-                "Could not understand the expense. Please use the format:\n"
-                "`/add $title, $amount, with p1, p2, and p3`",
-                raw_response,
-            )
+            return _NOT_UNDERSTOOD_MSG, raw_response
 
         return parsed, raw_response
     except (json.JSONDecodeError, KeyError, TypeError) as e:
         logger.error(f"LLM JSON parse failed: {e}")
-        return (
-            "Your request has been rejected. Please use the format:\n"
-            "`/add $title, $amount, with p1, p2, and p3`",
-            raw_response,
-        )
+        return _REJECTED_MSG, raw_response
     except httpx.TimeoutException:
         logger.error("Groq request timed out")
-        return "Error with LLM. Please try again later.", None
+        return _LLM_ERROR_MSG, None
     except httpx.HTTPError as e:
         logger.error(f"Groq request failed: {e}")
-        return "Error with LLM. Please try again later.", None
+        return _LLM_ERROR_MSG, None
     except Exception as e:
         logger.error(f"LLM parse failed: {e}")
-        return "Error with LLM. Please try again later.", raw_response
+        return _LLM_ERROR_MSG, raw_response

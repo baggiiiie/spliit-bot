@@ -141,7 +141,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(
         "baggiiiie's Spliit Bot\n\n"
-        "url: https://spliit.app/groups/WF\_-cIdW0KrDhsIal1uhI/\n"
+        "url: https://spliit.app/groups/WF\\_-cIdW0KrDhsIal1uhI/\n"
         "Commands:\n"
         "/group - Show participants\n"
         "/balance - Show balances\n"
@@ -178,12 +178,8 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         for pid, data in balances.items():
             name = id_name.get(pid, pid)
             total = data["total"] / 100
-            if total > 0:
-                lines.append(f"- {name}: +{currency}{total:.2f}")
-            elif total < 0:
-                lines.append(f"- {name}: {currency}{total:.2f}")
-            else:
-                lines.append(f"- {name}: {currency}0.00")
+            sign = "+" if total > 0 else ""
+            lines.append(f"- {name}: {sign}{currency}{total:.2f}")
 
         if reimbursements:
             lines.append("\n**Suggested Payments:**")

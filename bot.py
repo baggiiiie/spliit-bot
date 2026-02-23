@@ -54,9 +54,8 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.error:
         return
-    logger.error(f"Exception: {context.error}")
-    tb = traceback.format_exc()
-    logger.error(tb)
+    tb = "".join(traceback.format_exception(context.error))
+    logger.error(f"Exception:\n{tb}")
     if ADMIN_TELEGRAM_USER_ID:
         try:
             await context.bot.send_message(

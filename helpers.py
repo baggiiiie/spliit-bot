@@ -31,7 +31,7 @@ def participant_keyboard(
         for name, pid in participants.items()
     ]
     if done_btn:
-        all_selected = selected == set(pid for _, pid in participants.items())
+        all_selected = selected == set(participants.values())
         rows.append(
             [
                 InlineKeyboardButton(
