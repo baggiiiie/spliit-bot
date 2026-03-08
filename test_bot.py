@@ -154,22 +154,20 @@ FAKE_EXPENSES = [
         "id": "exp-123",
         "title": "[telebot-Baggie] Dinner",
         "amount": 5000,
-        "paidById": "pid-1",
+        "paidBy": {"id": "pid-1", "name": "Baggie"},
         "paidFor": [
-            {"participantId": "pid-1"},
-            {"participantId": "pid-2"},
+            {"participant": {"id": "pid-1", "name": "Baggie"}},
+            {"participant": {"id": "pid-2", "name": "Neo"}},
         ],
     },
     {
         "id": "exp-100",
         "title": "Old expense",
         "amount": 2000,
-        "paidById": "pid-2",
-        "paidFor": [{"participantId": "pid-2"}],
+        "paidBy": {"id": "pid-2", "name": "Neo"},
+        "paidFor": [{"participant": {"id": "pid-2", "name": "Neo"}}],
     },
 ]
-
-FAKE_ID_NAME = {"pid-1": "Baggie", "pid-2": "Neo"}
 
 
 def _make_update(chat_id="123", user_id=42, message_id=999):
@@ -248,7 +246,7 @@ class TestIsAllowedChat:
 
 
 class TestDellastCmd:
-    @patch("handlers.id_to_name_map", return_value=(FAKE_ID_NAME, "$"))
+    @patch("handlers.id_to_name_map", return_value=({}, "$"))
     @patch("handlers.get_expenses", return_value=FAKE_EXPENSES)
     @patch("handlers.is_allowed_chat", return_value=True)
     @patch("handlers.spliit", new_callable=lambda: MagicMock)

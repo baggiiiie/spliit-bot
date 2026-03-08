@@ -108,14 +108,11 @@ def get_balances(group_id: str) -> dict[str, Any]:
 
 
 def get_expenses(group_id: str) -> list[dict[str, Any]]:
-    params_input = {
-        "0": {"json": {"groupId": group_id}},
-        "1": {"json": {"groupId": group_id}},
-    }
+    params_input = {"0": {"json": {"groupId": group_id}}}
     params = {"batch": "1", "input": json.dumps(params_input)}
-    response = httpx.get("https://spliit.app/api/trpc/groups.get,groups.getDetails", params=params)
+    response = httpx.get("https://spliit.app/api/trpc/groups.expenses.list", params=params)
     data = response.json()
-    return data[1]["result"]["data"]["json"]["expenses"]
+    return data[0]["result"]["data"]["json"]["expenses"]
 
 
 def delete_expense(group_id: str, expense_id: str) -> None:
@@ -226,9 +223,9 @@ async def dellast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         title = latest["title"]
         amount = latest["amount"] / 100
 
-        id_name, currency = id_to_name_map(spliit)
-        payer_name = id_name.get(latest["paidById"], "Unknown")
-        payee_names = [id_name.get(p["participantId"], "Unknown") for p in latest["paidFor"]]
+        _, currency = id_to_name_map(spliit)
+        payer_name = latest["paidBy"]["name"]
+        payee_names = [p["participant"]["name"] for p in latest["paidFor"]]
 
         assert update.effective_user
         key = f"{update.effective_user.id}_{update.message.message_id}"
