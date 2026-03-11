@@ -143,7 +143,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/group - Show participants\n"
         "/balance - Show balances\n"
         "/add title, amount, with participants\n"
-        "/dellast - Delete the latest expense\n\n"
+        "/latest - Show latest 5 expenses\n"
+        "/undo - Delete the latest expense\n\n"
         "Example:\n"
         "`/add` (interactive)\n"
         "`/add $title, $amount` (interactive)\n"
@@ -199,7 +200,52 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
 
-async def dellast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_allowed_chat(update) or not update.message:
+        return
+    if not spliit:
+        await update.message.reply_text(
+            "SPLIIT_GROUP_ID not configured.",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    try:
+        _, currency = id_to_name_map(spliit)
+        expenses = get_expenses(SPLIIT_GROUP_ID)
+        if not expenses:
+            await update.message.reply_text(
+                "No expenses found.",
+                reply_to_message_id=update.message.message_id,
+            )
+            return
+
+        lines = ["<b>Latest 5 expenses</b>\n"]
+        for exp in expenses[:5]:
+            title = html.escape(exp["title"])
+            amount = exp["amount"] / 100
+            payer_name = html.escape(exp["paidBy"]["name"])
+            payee_names = [html.escape(p["participant"]["name"]) for p in exp["paidFor"]]
+            lines.append(
+                f"• <b>{title}</b>\n"
+                f"  {html.escape(currency)}{amount:.2f} — paid by {payer_name}\n"
+                f"  Split: {', '.join(payee_names)}"
+            )
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_to_message_id=update.message.message_id,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get latest expenses: {e}")
+        await update.message.reply_text(
+            f"Error: {e}",
+            reply_to_message_id=update.message.message_id,
+        )
+
+
+async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
     if not spliit:

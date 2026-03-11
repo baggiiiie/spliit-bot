@@ -32,13 +32,14 @@ from handlers import (
     balance_cmd,
     button,
     cancel_interactive,
-    dellast_cmd,
     group_cmd,
     interactive_amount,
     interactive_payees,
     interactive_payer,
     interactive_title,
+    latest_cmd,
     start,
+    undo_cmd,
 )
 
 
@@ -79,7 +80,8 @@ def main() -> None:
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("group", group_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
-    app.add_handler(CommandHandler("dellast", dellast_cmd))
+    app.add_handler(CommandHandler("undo", undo_cmd))
+    app.add_handler(CommandHandler("latest", latest_cmd))
 
     add_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_cmd)],

@@ -245,17 +245,66 @@ class TestIsAllowedChat:
         assert not helpers.is_allowed_chat(update)
 
 
-class TestDellastCmd:
+class TestLatestCmd:
+    @patch("handlers.id_to_name_map", return_value=({}, "$"))
+    @patch("handlers.get_expenses", return_value=FAKE_EXPENSES)
+    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.spliit", new_callable=lambda: MagicMock)
+    def test_shows_latest_expenses(self, mock_spliit, mock_allowed, mock_get, mock_idname):
+        from handlers import latest_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        asyncio.run(latest_cmd(update, ctx))
+
+        update.message.reply_text.assert_called_once()
+        call_kwargs = update.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert "Latest 5 expenses" in text
+        assert "Dinner" in text
+        assert "$50.00" in text
+        assert "Baggie" in text
+        assert "Neo" in text
+        assert call_kwargs.kwargs.get("parse_mode") == "HTML"
+
+    @patch("handlers.id_to_name_map", return_value=({}, "$"))
+    @patch("handlers.get_expenses", return_value=[])
+    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.spliit", new_callable=lambda: MagicMock)
+    def test_no_expenses(self, mock_spliit, mock_allowed, mock_get, mock_idname):
+        from handlers import latest_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        asyncio.run(latest_cmd(update, ctx))
+
+        update.message.reply_text.assert_called_once()
+        call_kwargs = update.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "No expenses found."
+
+    @patch("handlers.is_allowed_chat", return_value=False)
+    def test_disallowed_chat(self, mock_allowed):
+        from handlers import latest_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        asyncio.run(latest_cmd(update, ctx))
+
+        update.message.reply_text.assert_not_called()
+
+
+class TestUndoCmd:
     @patch("handlers.id_to_name_map", return_value=({}, "$"))
     @patch("handlers.get_expenses", return_value=FAKE_EXPENSES)
     @patch("handlers.is_allowed_chat", return_value=True)
     @patch("handlers.spliit", new_callable=lambda: MagicMock)
     def test_shows_latest_expense(self, mock_spliit, mock_allowed, mock_get, mock_idname):
-        from handlers import dellast_cmd
+        from handlers import undo_cmd
 
         update = _make_update()
         ctx = MagicMock()
-        asyncio.run(dellast_cmd(update, ctx))
+        asyncio.run(undo_cmd(update, ctx))
 
         update.message.reply_text.assert_called_once()
         call_kwargs = update.message.reply_text.call_args
@@ -268,11 +317,11 @@ class TestDellastCmd:
     @patch("handlers.is_allowed_chat", return_value=True)
     @patch("handlers.spliit", new_callable=lambda: MagicMock)
     def test_no_expenses(self, mock_spliit, mock_allowed, mock_get):
-        from handlers import dellast_cmd
+        from handlers import undo_cmd
 
         update = _make_update()
         ctx = MagicMock()
-        asyncio.run(dellast_cmd(update, ctx))
+        asyncio.run(undo_cmd(update, ctx))
 
         update.message.reply_text.assert_called_once()
         call_kwargs = update.message.reply_text.call_args
@@ -281,16 +330,16 @@ class TestDellastCmd:
 
     @patch("handlers.is_allowed_chat", return_value=False)
     def test_disallowed_chat(self, mock_allowed):
-        from handlers import dellast_cmd
+        from handlers import undo_cmd
 
         update = _make_update()
         ctx = MagicMock()
-        asyncio.run(dellast_cmd(update, ctx))
+        asyncio.run(undo_cmd(update, ctx))
 
         update.message.reply_text.assert_not_called()
 
 
-class TestDellastButton:
+class TestUndoButton:
     @patch("handlers.delete_expense")
     @patch("handlers.pending_deletes", {"42_999": "exp-123"})
     def test_confirm_delete(self, mock_delete):
