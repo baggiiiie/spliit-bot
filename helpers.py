@@ -55,6 +55,15 @@ def confirm_keyboard(key: str) -> InlineKeyboardMarkup:
     )
 
 
+def reimbursement_keyboard(options: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(label, callback_data=callback_data)]
+            for label, callback_data in options
+        ]
+    )
+
+
 def format_confirmation(title: str, amount: float, payer: str, payees: list[str]) -> str:
     share = amount / len(payees)
     return (

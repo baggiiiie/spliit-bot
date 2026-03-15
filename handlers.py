@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import html
-import json
 import logging
 import re
 from typing import Any
 
-import httpx
 from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
@@ -21,6 +19,7 @@ from config import (
     TITLE,
     pending,
     pending_deletes,
+    pending_settlements,
     spliit,
 )
 from helpers import (
@@ -30,9 +29,11 @@ from helpers import (
     id_to_name_map,
     is_allowed_chat,
     participant_keyboard,
+    reimbursement_keyboard,
     tg_display_name,
 )
 from parsing import parse_add_command, parse_with_llm
+from services import delete_expense, get_balances, get_expenses, settle_reimbursement
 
 logger = logging.getLogger(__name__)
 
@@ -100,39 +101,6 @@ async def _notify_admin_llm_error(
         logger.error(f"Failed to send error report to admin: {e}")
 
 
-def get_balances(group_id: str) -> dict[str, Any]:
-    params_input = {"0": {"json": {"groupId": group_id}}}
-    params = {"batch": "1", "input": json.dumps(params_input)}
-    response = httpx.get("https://spliit.app/api/trpc/groups.balances.list", params=params)
-    return response.json()[0]["result"]["data"]["json"]
-
-
-def get_expenses(group_id: str) -> list[dict[str, Any]]:
-    params_input = {"0": {"json": {"groupId": group_id}}}
-    params = {"batch": "1", "input": json.dumps(params_input)}
-    response = httpx.get("https://spliit.app/api/trpc/groups.expenses.list", params=params)
-    data = response.json()
-    return data[0]["result"]["data"]["json"]["expenses"]
-
-
-def delete_expense(group_id: str, expense_id: str) -> None:
-    params = {"batch": "1"}
-    json_data = {
-        "0": {
-            "json": {
-                "groupId": group_id,
-                "expenseId": expense_id,
-            },
-        },
-    }
-    response = httpx.post(
-        "https://spliit.app/api/trpc/groups.expenses.delete",
-        params=params,
-        json=json_data,
-    )
-    response.raise_for_status()
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
@@ -142,6 +110,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Commands:\n"
         "/group - Show participants\n"
         "/balance - Show balances\n"
+        "/settle - Mark a suggested reimbursement as paid\n"
         "/add title, amount, with participants\n"
         "/latest - Show latest 5 expenses\n"
         "/undo - Delete the latest expense\n\n"
@@ -239,6 +208,65 @@ async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
     except Exception as e:
         logger.error(f"Failed to get latest expenses: {e}")
+        await update.message.reply_text(
+            f"Error: {e}",
+            reply_to_message_id=update.message.message_id,
+        )
+
+
+async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_allowed_chat(update) or not update.message or not update.effective_user:
+        return
+    if not spliit:
+        await update.message.reply_text(
+            "SPLIIT_GROUP_ID not configured.",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    try:
+        id_name, currency = id_to_name_map(spliit)
+        balance_data = get_balances(SPLIIT_GROUP_ID)
+        reimbursements = balance_data["reimbursements"]
+        if not reimbursements:
+            await update.message.reply_text(
+                "No suggested reimbursements.",
+                reply_to_message_id=update.message.message_id,
+            )
+            return
+
+        key_prefix = f"{update.effective_user.id}_{update.message.message_id}"
+        lines = ["<b>Suggested reimbursements</b>\nSelect one to mark as paid:"]
+        options: list[tuple[str, str]] = []
+        for index, reimbursement in enumerate(reimbursements):
+            from_id = reimbursement["from"]
+            to_id = reimbursement["to"]
+            amount = reimbursement["amount"]
+            from_name = html.escape(id_name.get(from_id, from_id))
+            to_name = html.escape(id_name.get(to_id, to_id))
+            amount_display = amount / 100
+            settlement_key = f"{key_prefix}_{index}"
+            pending_settlements[settlement_key] = (from_id, to_id, amount)
+            lines.append(
+                f"{index + 1}. <b>{from_name}</b> owes <b>{to_name}</b> "
+                f"{html.escape(currency)}{amount_display:.2f}"
+            )
+            options.append(
+                (
+                    f"{id_name.get(from_id, from_id)} -> {id_name.get(to_id, to_id)} "
+                    f"({currency}{amount_display:.2f})",
+                    f"settle_{settlement_key}",
+                )
+            )
+
+        await update.message.reply_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_to_message_id=update.message.message_id,
+            reply_markup=reimbursement_keyboard(options),
+        )
+    except Exception as e:
+        logger.error(f"Failed to get suggested reimbursements: {e}")
         await update.message.reply_text(
             f"Error: {e}",
             reply_to_message_id=update.message.message_id,
@@ -680,3 +708,25 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         key = data[6:]
         pending_deletes.pop(key, None)
         await reply_to_callback(query, "Cancelled.")
+
+    elif data.startswith("settle_"):
+        key = data[7:]
+        reimbursement = pending_settlements.pop(key, None)
+        if not reimbursement:
+            await reply_to_callback(query, "Expired. Try again.")
+            return
+
+        from_id, to_id, amount = reimbursement
+        try:
+            settle_reimbursement(SPLIIT_GROUP_ID, from_id, to_id, amount)
+            assert spliit
+            id_name, currency = id_to_name_map(spliit)
+            from_name = id_name.get(from_id, from_id)
+            to_name = id_name.get(to_id, to_id)
+            await reply_to_callback(
+                query,
+                f"Marked as paid: {from_name} -> {to_name} ({currency}{amount / 100:.2f})",
+            )
+        except Exception as e:
+            logger.error(f"Failed to settle reimbursement: {e}")
+            await reply_to_callback(query, f"Failed: {e}")

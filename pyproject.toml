@@ -12,6 +12,9 @@ dependencies = [
     "spliit",
 ]
 
+[project.scripts]
+spliit-cli = "cli:main"
+
 [tool.uv.sources]
 spliit = { git = "https://github.com/guysoft/SpliitApi.git" }
 

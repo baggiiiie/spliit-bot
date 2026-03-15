@@ -3,6 +3,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from cli import (
+    add_cmd as cli_add_cmd,
+)
+from cli import (
+    balance_cmd as cli_balance_cmd,
+)
+from cli import (
+    build_parser,
+    list_reimbursements,
+    mark_reimbursement_paid,
+)
+from cli import (
+    group_cmd as cli_group_cmd,
+)
+from cli import (
+    latest_cmd as cli_latest_cmd,
+)
+from cli import (
+    undo_cmd as cli_undo_cmd,
+)
+from config import SPLIIT_GROUP_ID
 from parsing import ParsedExpense, parse_add_command, parse_with_llm
 
 PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
@@ -168,6 +189,14 @@ FAKE_EXPENSES = [
         "paidFor": [{"participant": {"id": "pid-2", "name": "Neo"}}],
     },
 ]
+
+FAKE_BALANCES = {
+    "balances": {},
+    "reimbursements": [
+        {"from": "pid-1", "to": "pid-2", "amount": 1250},
+        {"from": "pid-3", "to": "pid-2", "amount": 2500},
+    ],
+}
 
 
 def _make_update(chat_id="123", user_id=42, message_id=999):
@@ -380,3 +409,227 @@ class TestUndoButton:
         call_kwargs = update.callback_query.message.reply_text.call_args
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
         assert text == "Expired. Try again."
+
+
+class TestSettleCmd:
+    @patch(
+        "handlers.id_to_name_map",
+        return_value=({"pid-1": "Baggie", "pid-2": "Neo", "pid-3": "Yoga"}, "$"),
+    )
+    @patch("handlers.get_balances", return_value=FAKE_BALANCES)
+    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.spliit", new_callable=lambda: MagicMock)
+    def test_shows_suggested_reimbursements(self, mock_spliit, mock_allowed, mock_get, mock_idname):
+        from handlers import settle_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        asyncio.run(settle_cmd(update, ctx))
+
+        update.message.reply_text.assert_called_once()
+        call_kwargs = update.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        markup = call_kwargs.kwargs.get("reply_markup")
+        assert "Suggested reimbursements" in text
+        assert "Baggie" in text
+        assert "Neo" in text
+        assert "$12.50" in text
+        assert markup.inline_keyboard[0][0].callback_data == "settle_42_999_0"
+
+    @patch("handlers.get_balances", return_value={"balances": {}, "reimbursements": []})
+    @patch("handlers.id_to_name_map", return_value=({}, "$"))
+    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.spliit", new_callable=lambda: MagicMock())
+    def test_no_reimbursements(self, mock_spliit, mock_allowed, mock_idname, mock_get):
+        from handlers import settle_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        asyncio.run(settle_cmd(update, ctx))
+
+        update.message.reply_text.assert_called_once()
+        call_kwargs = update.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "No suggested reimbursements."
+
+
+class TestSettleButton:
+    @patch(
+        "handlers.id_to_name_map",
+        return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"),
+    )
+    @patch("handlers.settle_reimbursement")
+    @patch("handlers.pending_settlements", {"42_999_0": ("pid-1", "pid-2", 1250)})
+    @patch("handlers.spliit", new_callable=lambda: MagicMock())
+    def test_marks_reimbursement_paid(self, mock_spliit, mock_settle, mock_idname):
+        from handlers import SPLIIT_GROUP_ID, button
+
+        update = _make_callback_update("settle_42_999_0")
+        ctx = MagicMock()
+        asyncio.run(button(update, ctx))
+
+        mock_settle.assert_called_once_with(SPLIIT_GROUP_ID, "pid-1", "pid-2", 1250)
+        update.callback_query.message.reply_text.assert_called_once()
+        call_kwargs = update.callback_query.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "Marked as paid: Baggie -> Neo ($12.50)"
+
+    @patch("handlers.pending_settlements", {})
+    def test_expired_settlement(self):
+        from handlers import button
+
+        update = _make_callback_update("settle_42_999_0")
+        ctx = MagicMock()
+        asyncio.run(button(update, ctx))
+
+        update.callback_query.message.reply_text.assert_called_once()
+        call_kwargs = update.callback_query.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "Expired. Try again."
+
+
+class TestCli:
+    def test_parser_group(self):
+        args = build_parser().parse_args(["group"])
+        assert args.command == "group"
+
+    def test_parser_balance(self):
+        args = build_parser().parse_args(["balance"])
+        assert args.command == "balance"
+
+    def test_parser_latest(self):
+        args = build_parser().parse_args(["latest", "--limit", "2"])
+        assert args.command == "latest"
+        assert args.limit == 2
+
+    def test_parser_add(self):
+        args = build_parser().parse_args(
+            ["add", "Dinner", "50", "--paid-by", "Baggie", "--with", "Baggie", "Neo"]
+        )
+        assert args.command == "add"
+        assert args.title == "Dinner"
+        assert args.amount == 50
+        assert args.paid_by == "Baggie"
+        assert args.participants == ["Baggie", "Neo"]
+
+    def test_parser_undo(self):
+        args = build_parser().parse_args(["undo", "--yes"])
+        assert args.command == "undo"
+        assert args.yes is True
+
+    def test_parser_settle_list(self):
+        args = build_parser().parse_args(["settle", "list"])
+        assert args.command == "settle"
+        assert args.settle_command == "list"
+
+    def test_parser_settle_pay(self):
+        args = build_parser().parse_args(["settle", "pay", "2", "--yes"])
+        assert args.command == "settle"
+        assert args.settle_command == "pay"
+        assert args.index == 2
+        assert args.yes is True
+
+    @patch("cli.spliit", new_callable=lambda: MagicMock())
+    def test_group_cmd(self, mock_spliit, capsys):
+        mock_spliit.get_group.return_value = {
+            "name": "Trip",
+            "currency": "$",
+            "participants": [{"name": "Baggie"}, {"name": "Neo"}],
+        }
+
+        code = cli_group_cmd()
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "Trip ($)" in captured.out
+        assert "- Baggie" in captured.out
+        assert "- Neo" in captured.out
+
+    @patch(
+        "cli.id_to_name_map",
+        return_value=(
+            {"pid-1": "Baggie", "pid-2": "Neo", "pid-3": "Yoga"},
+            "$",
+        ),
+    )
+    @patch("cli.get_balances", return_value=FAKE_BALANCES)
+    @patch("cli.spliit", new_callable=lambda: MagicMock())
+    def test_balance_cmd(self, mock_spliit, mock_get, mock_idname, capsys):
+        mock_spliit.get_group.return_value = {"name": "Trip"}
+
+        code = cli_balance_cmd()
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "Trip balances" in captured.out
+        assert "Suggested payments:" in captured.out
+        assert "Baggie -> Neo: $12.50" in captured.out
+
+    @patch("cli.id_to_name_map", return_value=({}, "$"))
+    @patch("cli.get_expenses", return_value=FAKE_EXPENSES)
+    @patch("cli.spliit", new_callable=lambda: MagicMock())
+    def test_latest_cmd(self, mock_spliit, mock_get, mock_idname, capsys):
+        code = cli_latest_cmd(1)
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "Latest 1 expenses" in captured.out
+        assert "Dinner" in captured.out
+        assert "Amount: $50.00" in captured.out
+
+    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch("cli.spliit", new_callable=lambda: MagicMock())
+    def test_add_cmd(self, mock_spliit, mock_idname, capsys):
+        code = cli_add_cmd("Dinner", 50, "Baggie", ["Baggie", "Neo"])
+
+        captured = capsys.readouterr()
+        assert code == 0
+        mock_spliit.add_expense.assert_called_once_with(
+            title="[cli] Dinner",
+            paid_by="pid-1",
+            paid_for=[("pid-1", 1), ("pid-2", 1)],
+            amount=5000,
+        )
+        assert "Added: Dinner" in captured.out
+        assert "Split ($25.00 each): Baggie, Neo" in captured.out
+
+    @patch("cli.id_to_name_map", return_value=({}, "$"))
+    @patch("cli.get_expenses", return_value=FAKE_EXPENSES)
+    @patch("cli.delete_expense")
+    @patch("cli.spliit", new_callable=lambda: MagicMock())
+    def test_undo_cmd(self, mock_spliit, mock_delete, mock_get, mock_idname, capsys):
+        code = cli_undo_cmd(assume_yes=True)
+
+        captured = capsys.readouterr()
+        assert code == 0
+        mock_delete.assert_called_once_with(SPLIIT_GROUP_ID, "exp-123")
+        assert "Deleted:" in captured.out
+        assert "Dinner" in captured.out
+
+    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch(
+        "cli.get_balances",
+        return_value={"reimbursements": [{"from": "pid-1", "to": "pid-2", "amount": 1250}]},
+    )
+    @patch("cli.spliit", new_callable=lambda: MagicMock())
+    def test_list_reimbursements(self, mock_spliit, mock_get, mock_idname, capsys):
+        code = list_reimbursements()
+
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "1. Baggie -> Neo ($12.50)" in captured.out
+
+    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch(
+        "cli.get_balances",
+        return_value={"reimbursements": [{"from": "pid-1", "to": "pid-2", "amount": 1250}]},
+    )
+    @patch("cli.settle_reimbursement")
+    @patch("cli.spliit", new_callable=lambda: MagicMock())
+    def test_mark_reimbursement_paid(self, mock_spliit, mock_settle, mock_get, mock_idname, capsys):
+        code = mark_reimbursement_paid(1, assume_yes=True)
+
+        captured = capsys.readouterr()
+        assert code == 0
+        mock_settle.assert_called_once()
+        assert "Marked as paid: Baggie -> Neo ($12.50)" in captured.out

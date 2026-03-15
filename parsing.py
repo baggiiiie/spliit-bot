@@ -80,7 +80,10 @@ def parse_with_llm(
                     "messages": [
                         {
                             "role": "system",
-                            "content": "You are a JSON-only assistant. Always respond with a single JSON object and nothing else.",
+                            "content": (
+                                "You are a JSON-only assistant. Always respond with a single "
+                                "JSON object and nothing else."
+                            ),
                         },
                         {"role": "user", "content": prompt},
                     ],

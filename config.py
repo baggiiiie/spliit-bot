@@ -50,8 +50,10 @@ except Exception:
 
 type PaidFor = list[tuple[str, int]]
 type PendingExpense = tuple[str, int, str, PaidFor, str]
+type PendingSettlement = tuple[str, str, int]
 
 pending: dict[str, PendingExpense] = {}
 pending_deletes: dict[str, str] = {}
+pending_settlements: dict[str, PendingSettlement] = {}
 
 TITLE, AMOUNT, PAYER, PAYEES = range(4)

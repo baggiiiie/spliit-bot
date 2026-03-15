@@ -38,6 +38,7 @@ from handlers import (
     interactive_payer,
     interactive_title,
     latest_cmd,
+    settle_cmd,
     start,
     undo_cmd,
 )
@@ -80,6 +81,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("group", group_cmd))
     app.add_handler(CommandHandler("balance", balance_cmd))
+    app.add_handler(CommandHandler("settle", settle_cmd))
     app.add_handler(CommandHandler("undo", undo_cmd))
     app.add_handler(CommandHandler("latest", latest_cmd))
 
