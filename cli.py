@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import Any
 
 from config import SPLIIT_GROUP_ID, spliit
 from helpers import id_to_name_map
-from services import delete_expense, get_balances, get_expenses, settle_reimbursement
+from services import delete_expense, get_activities, get_balances, settle_reimbursement
+
+ACTIVITY_LABELS = {
+    "CREATE_EXPENSE": "Created expense",
+    "UPDATE_EXPENSE": "Updated expense",
+    "DELETE_EXPENSE": "Deleted expense",
+    "UPDATE_GROUP": "Updated group",
+}
 
 
 def _require_spliit() -> int | None:
@@ -69,22 +77,19 @@ def balance_cmd() -> int:
 def latest_cmd(limit: int) -> int:
     if (code := _require_spliit()) is not None:
         return code
+    if limit < 1:
+        print("Count must be a positive integer.", file=sys.stderr)
+        return 1
 
-    _, _, currency = _participant_maps()
-    expenses = get_expenses(SPLIIT_GROUP_ID)
-    if not expenses:
-        print("No expenses found.")
+    activities = get_activities(SPLIIT_GROUP_ID, limit)
+    if not activities:
+        print("No activity found.")
         return 0
 
-    print(f"Latest {min(limit, len(expenses))} expenses")
-    for expense in expenses[:limit]:
-        amount = expense["amount"] / 100
-        payee_names = [participant["participant"]["name"] for participant in expense["paidFor"]]
-        print()
-        print(f"- {expense['title']}")
-        print(f"  Amount: {currency}{amount:.2f}")
-        print(f"  Paid by: {expense['paidBy']['name']}")
-        print(f"  Split: {', '.join(payee_names)}")
+    print(f"Latest {len(activities)} activities")
+    for index, activity in enumerate(activities, start=1):
+        label = ACTIVITY_LABELS.get(activity["activityType"], activity["activityType"])
+        print(f"{index}. {label}: {_activity_subject(activity)}")
 
     return 0
 
@@ -123,34 +128,58 @@ def add_cmd(title: str, amount: float, paid_by: str, participants: list[str]) ->
     return 0
 
 
-def undo_cmd(assume_yes: bool) -> int:
+def _activity_subject(activity: dict[str, Any]) -> str:
+    if data := activity.get("data"):
+        return str(data)
+    if isinstance(activity.get("expense"), dict):
+        expense = activity["expense"]
+        title = expense.get("title")
+        if title:
+            return str(title)
+    return "Untitled"
+
+
+def _undoable_activity(activity: dict[str, Any]) -> tuple[str, str] | None:
+    if activity.get("activityType") != "CREATE_EXPENSE":
+        return None
+    expense_id = activity.get("expenseId")
+    if not expense_id or not activity.get("expense"):
+        return None
+    return str(expense_id), _activity_subject(activity)
+
+
+def undo_cmd(index: int, assume_yes: bool) -> int:
     if (code := _require_spliit()) is not None:
         return code
+    if index < 1:
+        print("Count must be a positive integer.", file=sys.stderr)
+        return 1
 
-    expenses = get_expenses(SPLIIT_GROUP_ID)
-    if not expenses:
-        print("No expenses found.")
+    activities = get_activities(SPLIIT_GROUP_ID, index)
+    if not activities:
+        print("No activity found.")
         return 0
+    if len(activities) < index:
+        print(f"Only {len(activities)} activit{'y' if len(activities) == 1 else 'ies'} found.")
+        return 1
 
-    _, _, currency = _participant_maps()
-    latest = expenses[0]
-    title = latest["title"]
-    amount = latest["amount"] / 100
-    payer_name = latest["paidBy"]["name"]
-    payee_names = [participant["participant"]["name"] for participant in latest["paidFor"]]
+    activity = activities[index - 1]
+    undoable = _undoable_activity(activity)
+    if not undoable:
+        print("This activity can't be undone. Only newly created expenses can be undone.")
+        return 1
+    expense_id, title = undoable
 
     if not assume_yes:
-        response = input(f"Delete latest expense: {title} ({currency}{amount:.2f})? [y/N] ").strip()
+        response = input(f"Undo activity #{index}: {title}? [y/N] ").strip()
         if response.lower() not in {"y", "yes"}:
             print("Cancelled.")
             return 0
 
-    delete_expense(SPLIIT_GROUP_ID, latest["id"])
-    print("Deleted:")
-    print(f"- {title}")
-    print(f"  Amount: {currency}{amount:.2f}")
-    print(f"  Paid by: {payer_name}")
-    print(f"  Split: {', '.join(payee_names)}")
+    delete_expense(SPLIIT_GROUP_ID, expense_id)
+    label = ACTIVITY_LABELS.get(str(activity["activityType"]), str(activity["activityType"]))
+    print("Undid:")
+    print(f"- {label}: {title}")
     return 0
 
 
@@ -215,8 +244,10 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("group", help="Show participants")
     subparsers.add_parser("balance", help="Show balances and suggested reimbursements")
 
-    latest_parser = subparsers.add_parser("latest", help="Show recent expenses")
-    latest_parser.add_argument("--limit", type=int, default=5, help="How many expenses to show")
+    latest_parser = subparsers.add_parser("latest", help="Show recent activity")
+    latest_parser.add_argument(
+        "limit", nargs="?", type=int, default=5, help="How many activities to show"
+    )
 
     add_parser = subparsers.add_parser("add", help="Add an expense")
     add_parser.add_argument("title", help="Expense title")
@@ -230,7 +261,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Participants included in the split",
     )
 
-    undo_parser = subparsers.add_parser("undo", help="Delete the latest expense")
+    undo_parser = subparsers.add_parser("undo", help="Undo a recent activity")
+    undo_parser.add_argument(
+        "index", nargs="?", type=int, default=1, help="1-based activity index from `latest`"
+    )
     undo_parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
 
     settle_parser = subparsers.add_parser("settle", help="List or settle suggested reimbursements")
@@ -260,7 +294,7 @@ def main() -> int:
     if args.command == "add":
         return add_cmd(args.title, args.amount, args.paid_by, args.participants)
     if args.command == "undo":
-        return undo_cmd(args.yes)
+        return undo_cmd(args.index, args.yes)
     if args.command == "settle" and args.settle_command == "list":
         return list_reimbursements()
     if args.command == "settle" and args.settle_command == "pay":

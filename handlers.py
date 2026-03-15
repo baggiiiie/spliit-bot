@@ -33,11 +33,17 @@ from helpers import (
     tg_display_name,
 )
 from parsing import parse_add_command, parse_with_llm
-from services import delete_expense, get_balances, get_expenses, settle_reimbursement
+from services import delete_expense, get_activities, get_balances, settle_reimbursement
 
 logger = logging.getLogger(__name__)
 
 FORMAT_HELP = "Format: `/add title, amount, names`"
+ACTIVITY_LABELS = {
+    "CREATE_EXPENSE": "Created expense",
+    "UPDATE_EXPENSE": "Updated expense",
+    "DELETE_EXPENSE": "Deleted expense",
+    "UPDATE_GROUP": "Updated group",
+}
 
 
 async def reply_to_callback(query: Any, text: str) -> None:
@@ -52,6 +58,41 @@ async def reply_to_callback(query: Any, text: str) -> None:
         )
     else:
         await query.edit_message_text(text)
+
+
+def _parse_count_arg(context: ContextTypes.DEFAULT_TYPE, default: int) -> int | str:
+    if not context.args:
+        return default
+    try:
+        count = int(context.args[0])
+    except ValueError:
+        return "Count must be a positive integer."
+    if count < 1:
+        return "Count must be a positive integer."
+    return count
+
+
+def _activity_subject(activity: dict[str, Any]) -> str:
+    if activity.get("data"):
+        return str(activity["data"])
+    if expense := activity.get("expense"):
+        return str(expense.get("title", "Untitled"))
+    return "Untitled"
+
+
+def _format_activity_line(activity: dict[str, Any], index: int) -> str:
+    label = ACTIVITY_LABELS.get(activity["activityType"], activity["activityType"])
+    subject = html.escape(_activity_subject(activity))
+    return f"{index}. <b>{label}</b>: {subject}"
+
+
+def _undoable_activity(activity: dict[str, Any]) -> tuple[str, str] | None:
+    if activity["activityType"] != "CREATE_EXPENSE":
+        return None
+    expense_id = activity.get("expenseId")
+    if not expense_id or not activity.get("expense"):
+        return None
+    return expense_id, _activity_subject(activity)
 
 
 def _store_pending_expense(
@@ -112,8 +153,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/balance - Show balances\n"
         "/settle - Mark a suggested reimbursement as paid\n"
         "/add title, amount, with participants\n"
-        "/latest - Show latest 5 expenses\n"
-        "/undo - Delete the latest expense\n\n"
+        "/latest [n] - Show latest activities (default 5)\n"
+        "/undo [n] - Undo activity #n if reversible (default 1)\n\n"
         "Example:\n"
         "`/add` (interactive)\n"
         "`/add $title, $amount` (interactive)\n"
@@ -180,26 +221,25 @@ async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     try:
-        _, currency = id_to_name_map(spliit)
-        expenses = get_expenses(SPLIIT_GROUP_ID)
-        if not expenses:
+        count = _parse_count_arg(context, 5)
+        if isinstance(count, str):
             await update.message.reply_text(
-                "No expenses found.",
+                count,
                 reply_to_message_id=update.message.message_id,
             )
             return
 
-        lines = ["<b>Latest 5 expenses</b>\n"]
-        for exp in expenses[:5]:
-            title = html.escape(exp["title"])
-            amount = exp["amount"] / 100
-            payer_name = html.escape(exp["paidBy"]["name"])
-            payee_names = [html.escape(p["participant"]["name"]) for p in exp["paidFor"]]
-            lines.append(
-                f"• <b>{title}</b>\n"
-                f"  {html.escape(currency)}{amount:.2f} — paid by {payer_name}\n"
-                f"  Split: {', '.join(payee_names)}"
+        activities = get_activities(SPLIIT_GROUP_ID, count)
+        if not activities:
+            await update.message.reply_text(
+                "No activity found.",
+                reply_to_message_id=update.message.message_id,
             )
+            return
+
+        lines = [f"<b>Latest {len(activities)} activities</b>\n"]
+        for index, activity in enumerate(activities, start=1):
+            lines.append(_format_activity_line(activity, index))
 
         await update.message.reply_text(
             "\n".join(lines),
@@ -263,7 +303,9 @@ async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "\n".join(lines),
             parse_mode="HTML",
             reply_to_message_id=update.message.message_id,
-            reply_markup=reimbursement_keyboard(options),
+            reply_markup=reimbursement_keyboard(
+                options, cancel_btn=("Cancel", f"settleno_{key_prefix}")
+            ),
         )
     except Exception as e:
         logger.error(f"Failed to get suggested reimbursements: {e}")
@@ -284,34 +326,46 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        expenses = get_expenses(SPLIIT_GROUP_ID)
-        if not expenses:
+        count = _parse_count_arg(context, 1)
+        if isinstance(count, str):
             await update.message.reply_text(
-                "No expenses found.",
+                count,
                 reply_to_message_id=update.message.message_id,
             )
             return
 
-        latest = expenses[0]
-        expense_id = latest["id"]
-        title = latest["title"]
-        amount = latest["amount"] / 100
+        activities = get_activities(SPLIIT_GROUP_ID, count)
+        if not activities:
+            await update.message.reply_text(
+                "No activity found.",
+                reply_to_message_id=update.message.message_id,
+            )
+            return
 
-        _, currency = id_to_name_map(spliit)
-        payer_name = latest["paidBy"]["name"]
-        payee_names = [p["participant"]["name"] for p in latest["paidFor"]]
+        if len(activities) < count:
+            await update.message.reply_text(
+                f"Only {len(activities)} activit{'y' if len(activities) == 1 else 'ies'} found.",
+                reply_to_message_id=update.message.message_id,
+            )
+            return
+
+        activity = activities[count - 1]
+        undoable = _undoable_activity(activity)
+        if not undoable:
+            await update.message.reply_text(
+                "This activity can't be undone. Only newly created expenses can be undone.",
+                reply_to_message_id=update.message.message_id,
+            )
+            return
+        expense_id, _title = undoable
 
         assert update.effective_user
         key = f"{update.effective_user.id}_{update.message.message_id}"
         pending_deletes[key] = expense_id
 
         await update.message.reply_text(
-            f"Delete latest expense?\n\n"
-            f"**{title}**\n"
-            f"Amount: {currency}{amount:.2f}\n"
-            f"Paid by: {payer_name}\n"
-            f"Split: {', '.join(payee_names)}",
-            parse_mode="Markdown",
+            f"Undo activity #{count}?\n\n{_format_activity_line(activity, count)}",
+            parse_mode="HTML",
             reply_to_message_id=update.message.message_id,
             reply_markup=InlineKeyboardMarkup(
                 [
@@ -730,3 +784,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.error(f"Failed to settle reimbursement: {e}")
             await reply_to_callback(query, f"Failed: {e}")
+
+    elif data.startswith("settleno_"):
+        key_prefix = data[9:]
+        for key in list(pending_settlements):
+            if key.startswith(f"{key_prefix}_"):
+                pending_settlements.pop(key, None)
+        await reply_to_callback(query, "Cancelled.")

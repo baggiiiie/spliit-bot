@@ -55,13 +55,16 @@ def confirm_keyboard(key: str) -> InlineKeyboardMarkup:
     )
 
 
-def reimbursement_keyboard(options: list[tuple[str, str]]) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(label, callback_data=callback_data)]
-            for label, callback_data in options
-        ]
-    )
+def reimbursement_keyboard(
+    options: list[tuple[str, str]], cancel_btn: tuple[str, str] | None = None
+) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(label, callback_data=callback_data)]
+        for label, callback_data in options
+    ]
+    if cancel_btn:
+        rows.append([InlineKeyboardButton(cancel_btn[0], callback_data=cancel_btn[1])])
+    return InlineKeyboardMarkup(rows)
 
 
 def format_confirmation(title: str, amount: float, payer: str, payees: list[str]) -> str:

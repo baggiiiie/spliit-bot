@@ -190,6 +190,30 @@ FAKE_EXPENSES = [
     },
 ]
 
+FAKE_ACTIVITIES = [
+    {
+        "id": "act-1",
+        "activityType": "CREATE_EXPENSE",
+        "expenseId": "exp-123",
+        "data": "Dinner",
+        "expense": FAKE_EXPENSES[0],
+    },
+    {
+        "id": "act-2",
+        "activityType": "UPDATE_GROUP",
+        "expenseId": None,
+        "data": None,
+        "expense": None,
+    },
+    {
+        "id": "act-3",
+        "activityType": "DELETE_EXPENSE",
+        "expenseId": "exp-deleted",
+        "data": "Taxi",
+        "expense": None,
+    },
+]
+
 FAKE_BALANCES = {
     "balances": {},
     "reimbursements": [
@@ -276,28 +300,28 @@ class TestIsAllowedChat:
 
 class TestLatestCmd:
     @patch("handlers.id_to_name_map", return_value=({}, "$"))
-    @patch("handlers.get_expenses", return_value=FAKE_EXPENSES)
+    @patch("handlers.get_activities", return_value=FAKE_ACTIVITIES)
     @patch("handlers.is_allowed_chat", return_value=True)
     @patch("handlers.spliit", new_callable=lambda: MagicMock)
-    def test_shows_latest_expenses(self, mock_spliit, mock_allowed, mock_get, mock_idname):
+    def test_shows_latest_activities(self, mock_spliit, mock_allowed, mock_get, mock_idname):
         from handlers import latest_cmd
 
         update = _make_update()
         ctx = MagicMock()
+        ctx.args = []
         asyncio.run(latest_cmd(update, ctx))
 
         update.message.reply_text.assert_called_once()
         call_kwargs = update.message.reply_text.call_args
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
-        assert "Latest 5 expenses" in text
+        assert "Latest 3 activities" in text
         assert "Dinner" in text
-        assert "$50.00" in text
-        assert "Baggie" in text
-        assert "Neo" in text
+        assert "Created expense" in text
+        assert "Updated group" in text
         assert call_kwargs.kwargs.get("parse_mode") == "HTML"
 
     @patch("handlers.id_to_name_map", return_value=({}, "$"))
-    @patch("handlers.get_expenses", return_value=[])
+    @patch("handlers.get_activities", return_value=[])
     @patch("handlers.is_allowed_chat", return_value=True)
     @patch("handlers.spliit", new_callable=lambda: MagicMock)
     def test_no_expenses(self, mock_spliit, mock_allowed, mock_get, mock_idname):
@@ -305,12 +329,27 @@ class TestLatestCmd:
 
         update = _make_update()
         ctx = MagicMock()
+        ctx.args = []
         asyncio.run(latest_cmd(update, ctx))
 
         update.message.reply_text.assert_called_once()
         call_kwargs = update.message.reply_text.call_args
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
-        assert text == "No expenses found."
+        assert text == "No activity found."
+
+    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.spliit", new_callable=lambda: MagicMock)
+    def test_invalid_count(self, mock_spliit, mock_allowed):
+        from handlers import latest_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        ctx.args = ["abc"]
+        asyncio.run(latest_cmd(update, ctx))
+
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args.args[0]
+        assert text == "Count must be a positive integer."
 
     @patch("handlers.is_allowed_chat", return_value=False)
     def test_disallowed_chat(self, mock_allowed):
@@ -324,25 +363,24 @@ class TestLatestCmd:
 
 
 class TestUndoCmd:
-    @patch("handlers.id_to_name_map", return_value=({}, "$"))
-    @patch("handlers.get_expenses", return_value=FAKE_EXPENSES)
+    @patch("handlers.get_activities", return_value=FAKE_ACTIVITIES)
     @patch("handlers.is_allowed_chat", return_value=True)
     @patch("handlers.spliit", new_callable=lambda: MagicMock)
-    def test_shows_latest_expense(self, mock_spliit, mock_allowed, mock_get, mock_idname):
+    def test_shows_latest_activity(self, mock_spliit, mock_allowed, mock_get):
         from handlers import undo_cmd
 
         update = _make_update()
         ctx = MagicMock()
+        ctx.args = []
         asyncio.run(undo_cmd(update, ctx))
 
         update.message.reply_text.assert_called_once()
         call_kwargs = update.message.reply_text.call_args
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
         assert "Dinner" in text
-        assert "$50.00" in text
-        assert "Baggie" in text
+        assert "Undo activity #1?" in text
 
-    @patch("handlers.get_expenses", return_value=[])
+    @patch("handlers.get_activities", return_value=[])
     @patch("handlers.is_allowed_chat", return_value=True)
     @patch("handlers.spliit", new_callable=lambda: MagicMock)
     def test_no_expenses(self, mock_spliit, mock_allowed, mock_get):
@@ -350,12 +388,28 @@ class TestUndoCmd:
 
         update = _make_update()
         ctx = MagicMock()
+        ctx.args = []
         asyncio.run(undo_cmd(update, ctx))
 
         update.message.reply_text.assert_called_once()
         call_kwargs = update.message.reply_text.call_args
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
-        assert text == "No expenses found."
+        assert text == "No activity found."
+
+    @patch("handlers.get_activities", return_value=FAKE_ACTIVITIES[:2])
+    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.spliit", new_callable=lambda: MagicMock)
+    def test_non_undoable_activity(self, mock_spliit, mock_allowed, mock_get):
+        from handlers import undo_cmd
+
+        update = _make_update()
+        ctx = MagicMock()
+        ctx.args = ["2"]
+        asyncio.run(undo_cmd(update, ctx))
+
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args.args[0]
+        assert text == "This activity can't be undone. Only newly created expenses can be undone."
 
     @patch("handlers.is_allowed_chat", return_value=False)
     def test_disallowed_chat(self, mock_allowed):
@@ -363,6 +417,7 @@ class TestUndoCmd:
 
         update = _make_update()
         ctx = MagicMock()
+        ctx.args = []
         asyncio.run(undo_cmd(update, ctx))
 
         update.message.reply_text.assert_not_called()
@@ -435,6 +490,7 @@ class TestSettleCmd:
         assert "Neo" in text
         assert "$12.50" in text
         assert markup.inline_keyboard[0][0].callback_data == "settle_42_999_0"
+        assert markup.inline_keyboard[-1][0].callback_data == "settleno_42_999"
 
     @patch("handlers.get_balances", return_value={"balances": {}, "reimbursements": []})
     @patch("handlers.id_to_name_map", return_value=({}, "$"))
@@ -487,6 +543,22 @@ class TestSettleButton:
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
         assert text == "Expired. Try again."
 
+    @patch(
+        "handlers.pending_settlements",
+        {"42_999_0": ("pid-1", "pid-2", 1250), "42_999_1": ("pid-3", "pid-2", 2500)},
+    )
+    def test_cancel_settlement(self):
+        from handlers import button
+
+        update = _make_callback_update("settleno_42_999")
+        ctx = MagicMock()
+        asyncio.run(button(update, ctx))
+
+        update.callback_query.message.reply_text.assert_called_once()
+        call_kwargs = update.callback_query.message.reply_text.call_args
+        text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
+        assert text == "Cancelled."
+
 
 class TestCli:
     def test_parser_group(self):
@@ -498,7 +570,7 @@ class TestCli:
         assert args.command == "balance"
 
     def test_parser_latest(self):
-        args = build_parser().parse_args(["latest", "--limit", "2"])
+        args = build_parser().parse_args(["latest", "2"])
         assert args.command == "latest"
         assert args.limit == 2
 
@@ -513,8 +585,9 @@ class TestCli:
         assert args.participants == ["Baggie", "Neo"]
 
     def test_parser_undo(self):
-        args = build_parser().parse_args(["undo", "--yes"])
+        args = build_parser().parse_args(["undo", "3", "--yes"])
         assert args.command == "undo"
+        assert args.index == 3
         assert args.yes is True
 
     def test_parser_settle_list(self):
@@ -565,17 +638,16 @@ class TestCli:
         assert "Suggested payments:" in captured.out
         assert "Baggie -> Neo: $12.50" in captured.out
 
-    @patch("cli.id_to_name_map", return_value=({}, "$"))
-    @patch("cli.get_expenses", return_value=FAKE_EXPENSES)
+    @patch("cli.get_activities", return_value=FAKE_ACTIVITIES[:1])
     @patch("cli.spliit", new_callable=lambda: MagicMock())
-    def test_latest_cmd(self, mock_spliit, mock_get, mock_idname, capsys):
+    def test_latest_cmd(self, mock_spliit, mock_get, capsys):
         code = cli_latest_cmd(1)
 
         captured = capsys.readouterr()
         assert code == 0
-        assert "Latest 1 expenses" in captured.out
+        assert "Latest 1 activities" in captured.out
         assert "Dinner" in captured.out
-        assert "Amount: $50.00" in captured.out
+        assert "Created expense" in captured.out
 
     @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
     @patch("cli.spliit", new_callable=lambda: MagicMock())
@@ -593,17 +665,16 @@ class TestCli:
         assert "Added: Dinner" in captured.out
         assert "Split ($25.00 each): Baggie, Neo" in captured.out
 
-    @patch("cli.id_to_name_map", return_value=({}, "$"))
-    @patch("cli.get_expenses", return_value=FAKE_EXPENSES)
+    @patch("cli.get_activities", return_value=FAKE_ACTIVITIES[:1])
     @patch("cli.delete_expense")
     @patch("cli.spliit", new_callable=lambda: MagicMock())
-    def test_undo_cmd(self, mock_spliit, mock_delete, mock_get, mock_idname, capsys):
-        code = cli_undo_cmd(assume_yes=True)
+    def test_undo_cmd(self, mock_spliit, mock_delete, mock_get, capsys):
+        code = cli_undo_cmd(1, assume_yes=True)
 
         captured = capsys.readouterr()
         assert code == 0
         mock_delete.assert_called_once_with(SPLIIT_GROUP_ID, "exp-123")
-        assert "Deleted:" in captured.out
+        assert "Undid:" in captured.out
         assert "Dinner" in captured.out
 
     @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))

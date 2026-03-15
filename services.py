@@ -22,6 +22,14 @@ def get_expenses(group_id: str) -> list[dict[str, Any]]:
     return data[0]["result"]["data"]["json"]["expenses"]
 
 
+def get_activities(group_id: str, limit: int, cursor: int = 0) -> list[dict[str, Any]]:
+    params_input = {"0": {"json": {"groupId": group_id, "cursor": cursor, "limit": limit}}}
+    params = {"batch": "1", "input": json.dumps(params_input)}
+    response = httpx.get("https://spliit.app/api/trpc/groups.activities.list", params=params)
+    data = response.json()
+    return data[0]["result"]["data"]["json"]["activities"]
+
+
 def delete_expense(group_id: str, expense_id: str) -> None:
     params = {"batch": "1"}
     json_data = {
