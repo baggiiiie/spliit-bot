@@ -18,8 +18,10 @@ from config import (
     ADMIN_TELEGRAM_USER_ID,
     AMOUNT,
     BOT_MODE,
+    HEALTH_HTTP_PORT,
     PAYEES,
     PAYER,
+    SELECT_GROUP,
     TELEGRAM_BOT_TOKEN,
     TITLE,
     WEBHOOK_PORT,
@@ -36,12 +38,15 @@ from handlers import (
     interactive_amount,
     interactive_payees,
     interactive_payer,
+    interactive_select_group,
     interactive_title,
     latest_cmd,
     settle_cmd,
     start,
+    switch_cmd,
     undo_cmd,
 )
+from health_http import start_background_health_server
 
 
 async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -74,6 +79,15 @@ def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN not set")
         return
 
+    if HEALTH_HTTP_PORT > 0:
+        if BOT_MODE == "webhook" and WEBHOOK_PORT == HEALTH_HTTP_PORT:
+            logger.error(
+                "HEALTH_HTTP_PORT cannot match WEBHOOK_PORT; use polling for ONCE or "
+                "set WEBHOOK_PORT to a different port than HEALTH_HTTP_PORT"
+            )
+            return
+        start_background_health_server(HEALTH_HTTP_PORT)
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.ALL, log_message), group=-1)
     app.add_error_handler(error_handler)
@@ -84,10 +98,12 @@ def main() -> None:
     app.add_handler(CommandHandler("settle", settle_cmd))
     app.add_handler(CommandHandler("undo", undo_cmd))
     app.add_handler(CommandHandler("latest", latest_cmd))
+    app.add_handler(CommandHandler("switch", switch_cmd))
 
     add_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_cmd)],
         states={
+            SELECT_GROUP: [CallbackQueryHandler(interactive_select_group, pattern=r"^selgrp_")],
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_title)],
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_amount)],
             PAYER: [CallbackQueryHandler(interactive_payer, pattern=r"^payer_")],

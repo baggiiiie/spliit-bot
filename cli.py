@@ -4,7 +4,9 @@ import argparse
 import sys
 from typing import Any
 
-from config import SPLIIT_GROUP_ID, spliit
+from spliit import Spliit
+
+from config import get_spliit
 from helpers import id_to_name_map
 from services import delete_expense, get_activities, get_balances, settle_reimbursement
 
@@ -16,26 +18,26 @@ ACTIVITY_LABELS = {
 }
 
 
-def _require_spliit() -> int | None:
-    if spliit:
+def _resolve_target(group_id: str | None) -> tuple[str, Spliit] | None:
+    if not group_id:
+        print("Missing required --spliit-group.", file=sys.stderr)
         return None
-    print("SPLIIT_GROUP_ID not configured.", file=sys.stderr)
-    return 1
+    return group_id, get_spliit(group_id)
 
 
-def _participant_maps() -> tuple[dict[str, str], dict[str, str], str]:
-    assert spliit
-    id_name, currency = id_to_name_map(spliit)
+def _participant_maps(client: Spliit) -> tuple[dict[str, str], dict[str, str], str]:
+    id_name, currency = id_to_name_map(client)
     name_id = {name.lower(): pid for pid, name in id_name.items()}
     return id_name, name_id, currency
 
 
-def group_cmd() -> int:
-    if (code := _require_spliit()) is not None:
-        return code
+def group_cmd(group_id: str | None = None) -> int:
+    resolved = _resolve_target(group_id)
+    if not resolved:
+        return 1
+    _group_id, client = resolved
 
-    assert spliit
-    group = spliit.get_group()
+    group = client.get_group()
     print(f"{group['name']} ({group['currency']})")
     print()
     print("Participants:")
@@ -44,16 +46,17 @@ def group_cmd() -> int:
     return 0
 
 
-def balance_cmd() -> int:
-    if (code := _require_spliit()) is not None:
-        return code
+def balance_cmd(group_id: str | None = None) -> int:
+    resolved = _resolve_target(group_id)
+    if not resolved:
+        return 1
+    resolved_group_id, client = resolved
 
-    assert spliit
-    id_name, currency = id_to_name_map(spliit)
-    balance_data = get_balances(SPLIIT_GROUP_ID)
+    id_name, currency = id_to_name_map(client)
+    balance_data = get_balances(resolved_group_id)
     balances = balance_data["balances"]
     reimbursements = balance_data["reimbursements"]
-    group = spliit.get_group()
+    group = client.get_group()
 
     print(f"{group['name']} balances")
     print()
@@ -74,14 +77,16 @@ def balance_cmd() -> int:
     return 0
 
 
-def latest_cmd(limit: int) -> int:
-    if (code := _require_spliit()) is not None:
-        return code
+def latest_cmd(limit: int, group_id: str | None = None) -> int:
+    resolved = _resolve_target(group_id)
+    if not resolved:
+        return 1
+    resolved_group_id, _client = resolved
     if limit < 1:
         print("Count must be a positive integer.", file=sys.stderr)
         return 1
 
-    activities = get_activities(SPLIIT_GROUP_ID, limit)
+    activities = get_activities(resolved_group_id, limit)
     if not activities:
         print("No activity found.")
         return 0
@@ -94,11 +99,19 @@ def latest_cmd(limit: int) -> int:
     return 0
 
 
-def add_cmd(title: str, amount: float, paid_by: str, participants: list[str]) -> int:
-    if (code := _require_spliit()) is not None:
-        return code
+def add_cmd(
+    title: str,
+    amount: float,
+    paid_by: str,
+    participants: list[str],
+    group_id: str | None = None,
+) -> int:
+    resolved = _resolve_target(group_id)
+    if not resolved:
+        return 1
+    _resolved_group_id, client = resolved
 
-    _, name_id, currency = _participant_maps()
+    _, name_id, currency = _participant_maps(client)
     payer_id = name_id.get(paid_by.lower())
     if not payer_id:
         print(f"Unknown participant: {paid_by}", file=sys.stderr)
@@ -113,8 +126,7 @@ def add_cmd(title: str, amount: float, paid_by: str, participants: list[str]) ->
     for name in participants:
         payee_ids.append((name_id[name.lower()], 1))
 
-    assert spliit
-    spliit.add_expense(
+    client.add_expense(
         title=f"[cli] {title}",
         paid_by=payer_id,
         paid_for=payee_ids,
@@ -148,14 +160,16 @@ def _undoable_activity(activity: dict[str, Any]) -> tuple[str, str] | None:
     return str(expense_id), _activity_subject(activity)
 
 
-def undo_cmd(index: int, assume_yes: bool) -> int:
-    if (code := _require_spliit()) is not None:
-        return code
+def undo_cmd(index: int, assume_yes: bool, group_id: str | None = None) -> int:
+    resolved = _resolve_target(group_id)
+    if not resolved:
+        return 1
+    resolved_group_id, _client = resolved
     if index < 1:
         print("Count must be a positive integer.", file=sys.stderr)
         return 1
 
-    activities = get_activities(SPLIIT_GROUP_ID, index)
+    activities = get_activities(resolved_group_id, index)
     if not activities:
         print("No activity found.")
         return 0
@@ -176,19 +190,21 @@ def undo_cmd(index: int, assume_yes: bool) -> int:
             print("Cancelled.")
             return 0
 
-    delete_expense(SPLIIT_GROUP_ID, expense_id)
+    delete_expense(resolved_group_id, expense_id)
     label = ACTIVITY_LABELS.get(str(activity["activityType"]), str(activity["activityType"]))
     print("Undid:")
     print(f"- {label}: {title}")
     return 0
 
 
-def list_reimbursements() -> int:
-    if (code := _require_spliit()) is not None:
-        return code
+def list_reimbursements(group_id: str | None = None) -> int:
+    resolved = _resolve_target(group_id)
+    if not resolved:
+        return 1
+    resolved_group_id, client = resolved
 
-    id_name, _, currency = _participant_maps()
-    reimbursements = get_balances(SPLIIT_GROUP_ID)["reimbursements"]
+    id_name, _, currency = _participant_maps(client)
+    reimbursements = get_balances(resolved_group_id)["reimbursements"]
     if not reimbursements:
         print("No suggested reimbursements.")
         return 0
@@ -202,12 +218,14 @@ def list_reimbursements() -> int:
     return 0
 
 
-def mark_reimbursement_paid(index: int, assume_yes: bool) -> int:
-    if (code := _require_spliit()) is not None:
-        return code
+def mark_reimbursement_paid(index: int, assume_yes: bool, group_id: str | None = None) -> int:
+    resolved = _resolve_target(group_id)
+    if not resolved:
+        return 1
+    resolved_group_id, client = resolved
 
-    id_name, _, currency = _participant_maps()
-    reimbursements = get_balances(SPLIIT_GROUP_ID)["reimbursements"]
+    id_name, _, currency = _participant_maps(client)
+    reimbursements = get_balances(resolved_group_id)["reimbursements"]
     if not reimbursements:
         print("No suggested reimbursements.")
         return 1
@@ -232,13 +250,18 @@ def mark_reimbursement_paid(index: int, assume_yes: bool) -> int:
             print("Cancelled.")
             return 0
 
-    settle_reimbursement(SPLIIT_GROUP_ID, from_id, to_id, amount)
+    settle_reimbursement(resolved_group_id, from_id, to_id, amount)
     print(f"Marked as paid: {from_name} -> {to_name} ({currency}{amount_display:.2f})")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Local Spliit CLI")
+    parser.add_argument(
+        "--spliit-group",
+        dest="spliit_group",
+        help="Target Spliit group ID",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("group", help="Show participants")
@@ -286,19 +309,19 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "group":
-        return group_cmd()
+        return group_cmd(args.spliit_group)
     if args.command == "balance":
-        return balance_cmd()
+        return balance_cmd(args.spliit_group)
     if args.command == "latest":
-        return latest_cmd(args.limit)
+        return latest_cmd(args.limit, args.spliit_group)
     if args.command == "add":
-        return add_cmd(args.title, args.amount, args.paid_by, args.participants)
+        return add_cmd(args.title, args.amount, args.paid_by, args.participants, args.spliit_group)
     if args.command == "undo":
-        return undo_cmd(args.index, args.yes)
+        return undo_cmd(args.index, args.yes, args.spliit_group)
     if args.command == "settle" and args.settle_command == "list":
-        return list_reimbursements()
+        return list_reimbursements(args.spliit_group)
     if args.command == "settle" and args.settle_command == "pay":
-        return mark_reimbursement_paid(args.index, args.yes)
+        return mark_reimbursement_paid(args.index, args.yes, args.spliit_group)
 
     parser.error("Unknown command")
     return 2

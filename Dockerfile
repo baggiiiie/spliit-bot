@@ -10,4 +10,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY . .
 RUN uv sync --frozen --no-dev
 
+# ONCE (https://github.com/basecamp/once) expects HTTP on port 80 and GET /up
+ENV HEALTH_HTTP_PORT=80
+EXPOSE 80
+
 CMD ["uv", "run", "python", "bot.py"]

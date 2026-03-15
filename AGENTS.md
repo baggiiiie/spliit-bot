@@ -23,6 +23,7 @@ Run `-m llm` tests only when `prompt.txt` changes.
 - `config.py`: env vars, constants, shared state, type aliases
 - `handlers.py`: Telegram command/callback handlers
 - `helpers.py`: pure Telegram UI helpers and chat validation
+- `health_http.py`: GET `/up` health server (e.g. ONCE)
 - `parsing.py`: expense parsing only
 - `services.py`: Spliit HTTP calls
 - `cli.py`: local CLI that mirrors bot flows

@@ -5,31 +5,36 @@ from __future__ import annotations
 import html
 import logging
 import re
-from typing import Any
+from typing import Any, cast
 
+from spliit import Spliit
 from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from config import (
     ADMIN_TELEGRAM_USER_ID,
+    ALL_GROUP_IDS,
     AMOUNT,
     PAYEES,
     PAYER,
-    SPLIIT_GROUP_ID,
+    SELECT_GROUP,
     TITLE,
+    get_spliit,
     pending,
     pending_deletes,
     pending_settlements,
-    spliit,
 )
 from helpers import (
     build_mention,
     confirm_keyboard,
     format_confirmation,
+    group_picker_keyboard,
     id_to_name_map,
     is_allowed_chat,
+    is_dm,
     participant_keyboard,
     reimbursement_keyboard,
+    resolve_group,
     tg_display_name,
 )
 from parsing import parse_add_command, parse_with_llm
@@ -38,6 +43,10 @@ from services import delete_expense, get_activities, get_balances, settle_reimbu
 logger = logging.getLogger(__name__)
 
 FORMAT_HELP = "Format: `/add title, amount, names`"
+NO_GROUP_MSG = "No group linked to this chat."
+DM_NO_GROUP_MSG = "No group selected. Use /switch to pick one."
+
+
 ACTIVITY_LABELS = {
     "CREATE_EXPENSE": "Created expense",
     "UPDATE_EXPENSE": "Updated expense",
@@ -101,6 +110,7 @@ def _store_pending_expense(
     message_id: int,
     tg_name: str,
     payee_ids: list[str],
+    group_id: str,
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Build confirmation for a pending expense and store it."""
     title = user_data["expense_title"]
@@ -112,9 +122,28 @@ def _store_pending_expense(
     payee_names = [reverse[pid] for pid in payee_ids]
 
     key = f"{user_id}_{message_id}"
-    pending[key] = (title, int(amount * 100), payer_id, [(pid, 1) for pid in payee_ids], tg_name)
+    pending[key] = (
+        title,
+        int(amount * 100),
+        payer_id,
+        [(pid, 1) for pid in payee_ids],
+        tg_name,
+        group_id,
+    )
 
     return format_confirmation(title, amount, payer_name, payee_names), confirm_keyboard(key)
+
+
+def _reset_add_state(user_data: dict) -> None:
+    for key in (
+        "expense_title",
+        "expense_amount",
+        "payer_id",
+        "payer_name",
+        "selected_payees",
+        "participants_map",
+    ):
+        user_data.pop(key, None)
 
 
 async def _notify_admin_llm_error(
@@ -147,14 +176,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(
         "baggiiiie's Spliit Bot\n\n"
-        "url: https://spliit.app/groups/WF\\_-cIdW0KrDhsIal1uhI/\n"
         "Commands:\n"
         "/group - Show participants\n"
         "/balance - Show balances\n"
         "/settle - Mark a suggested reimbursement as paid\n"
         "/add title, amount, with participants\n"
         "/latest [n] - Show latest activities (default 5)\n"
-        "/undo [n] - Undo activity #n if reversible (default 1)\n\n"
+        "/undo [n] - Undo activity #n if reversible (default 1)\n"
+        "/switch - Select which Spliit group to manage (DM)\n\n"
         "Example:\n"
         "`/add` (interactive)\n"
         "`/add $title, $amount` (interactive)\n"
@@ -168,20 +197,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    if not spliit:
-        await update.message.reply_text(
-            "SPLIIT_GROUP_ID not configured.",
-            reply_to_message_id=update.message.message_id,
-        )
+    resolved = resolve_group(update, context.user_data)
+    if not resolved:
+        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
+        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
+    group_id, client = resolved
 
     try:
-        id_name, currency = id_to_name_map(spliit)
-        balance_data = get_balances(SPLIIT_GROUP_ID)
+        id_name, currency = id_to_name_map(client)
+        balance_data = get_balances(group_id)
         balances = balance_data["balances"]
         reimbursements = balance_data["reimbursements"]
 
-        group = spliit.get_group()
+        group = client.get_group()
         lines = [f"**{group['name']}** Balances\n"]
         for pid, data in balances.items():
             name = id_name.get(pid, pid)
@@ -213,12 +242,12 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    if not spliit:
-        await update.message.reply_text(
-            "SPLIIT_GROUP_ID not configured.",
-            reply_to_message_id=update.message.message_id,
-        )
+    resolved = resolve_group(update, context.user_data)
+    if not resolved:
+        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
+        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
+    group_id, _client = resolved
 
     try:
         count = _parse_count_arg(context, 5)
@@ -229,7 +258,7 @@ async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             )
             return
 
-        activities = get_activities(SPLIIT_GROUP_ID, count)
+        activities = get_activities(group_id, count)
         if not activities:
             await update.message.reply_text(
                 "No activity found.",
@@ -257,16 +286,16 @@ async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message or not update.effective_user:
         return
-    if not spliit:
-        await update.message.reply_text(
-            "SPLIIT_GROUP_ID not configured.",
-            reply_to_message_id=update.message.message_id,
-        )
+    resolved = resolve_group(update, context.user_data)
+    if not resolved:
+        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
+        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
+    group_id, client = resolved
 
     try:
-        id_name, currency = id_to_name_map(spliit)
-        balance_data = get_balances(SPLIIT_GROUP_ID)
+        id_name, currency = id_to_name_map(client)
+        balance_data = get_balances(group_id)
         reimbursements = balance_data["reimbursements"]
         if not reimbursements:
             await update.message.reply_text(
@@ -286,7 +315,7 @@ async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             to_name = html.escape(id_name.get(to_id, to_id))
             amount_display = amount / 100
             settlement_key = f"{key_prefix}_{index}"
-            pending_settlements[settlement_key] = (from_id, to_id, amount)
+            pending_settlements[settlement_key] = (from_id, to_id, amount, group_id)
             lines.append(
                 f"{index + 1}. <b>{from_name}</b> owes <b>{to_name}</b> "
                 f"{html.escape(currency)}{amount_display:.2f}"
@@ -318,12 +347,12 @@ async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    if not spliit:
-        await update.message.reply_text(
-            "SPLIIT_GROUP_ID not configured.",
-            reply_to_message_id=update.message.message_id,
-        )
+    resolved = resolve_group(update, context.user_data)
+    if not resolved:
+        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
+        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
+    group_id, _client = resolved
 
     try:
         count = _parse_count_arg(context, 1)
@@ -334,7 +363,7 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
-        activities = get_activities(SPLIIT_GROUP_ID, count)
+        activities = get_activities(group_id, count)
         if not activities:
             await update.message.reply_text(
                 "No activity found.",
@@ -361,7 +390,7 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         assert update.effective_user
         key = f"{update.effective_user.id}_{update.message.message_id}"
-        pending_deletes[key] = expense_id
+        pending_deletes[key] = (expense_id, group_id)
 
         await update.message.reply_text(
             f"Undo activity #{count}?\n\n{_format_activity_line(activity, count)}",
@@ -387,15 +416,15 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    if not spliit:
-        await update.message.reply_text(
-            "SPLIIT_GROUP_ID not configured.",
-            reply_to_message_id=update.message.message_id,
-        )
+    resolved = resolve_group(update, context.user_data)
+    if not resolved:
+        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
+        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
+    _group_id, client = resolved
 
     try:
-        group = spliit.get_group()
+        group = client.get_group()
         names = [p["name"] for p in group["participants"]]
         await update.message.reply_text(
             f"**{group['name']}** ({group['currency']})\n\nParticipants:\n"
@@ -411,34 +440,31 @@ async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
-async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
-    if not is_allowed_chat(update) or not update.message or not update.effective_user:
-        return ConversationHandler.END
-    if not spliit:
-        await update.message.reply_text(
-            "SPLIIT_GROUP_ID not configured.",
-            reply_to_message_id=update.message.message_id,
-        )
-        return ConversationHandler.END
-
-    text = (update.message.text or "").strip()
-
+async def _continue_add_flow(
+    message: Message,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    tg_name: str,
+    group_id: str,
+    client: Spliit,
+    text: str,
+) -> int:
     if text == "/add":
-        await update.message.reply_text(
+        await message.reply_text(
             "Enter expense title:",
             reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
-            reply_to_message_id=update.message.message_id,
+            reply_to_message_id=message.message_id,
         )
         return TITLE
 
     assert context.user_data is not None
 
     try:
-        participants_map = spliit.get_participants()
+        participants_map = client.get_participants()
     except Exception as e:
-        await update.message.reply_text(
+        await message.reply_text(
             f"Error: {e}",
-            reply_to_message_id=update.message.message_id,
+            reply_to_message_id=message.message_id,
         )
         return ConversationHandler.END
 
@@ -452,25 +478,25 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         has_number = bool(re.search(r"\d", raw_text))
         has_participant = any(n.lower() in raw_text.lower() for n in participant_names)
         if not has_number and not has_participant:
-            await update.message.reply_text(
+            await message.reply_text(
                 FORMAT_HELP,
                 parse_mode="Markdown",
-                reply_to_message_id=update.message.message_id,
+                reply_to_message_id=message.message_id,
             )
             return ConversationHandler.END
         llm_result, raw_response = parse_with_llm(raw_text, participant_names)
         if isinstance(llm_result, str):
             await _notify_admin_llm_error(
                 context,
-                update.effective_user,
+                message.from_user,
                 raw_text,
                 llm_result,
                 raw_response,
             )
-            await update.message.reply_text(
+            await message.reply_text(
                 llm_result,
                 parse_mode="Markdown",
-                reply_to_message_id=update.message.message_id,
+                reply_to_message_id=message.message_id,
             )
             return ConversationHandler.END
         if llm_result:
@@ -478,10 +504,10 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             logger.info(f"LLM parsed: {expense}")
 
     if not expense:
-        await update.message.reply_text(
+        await message.reply_text(
             FORMAT_HELP,
             parse_mode="Markdown",
-            reply_to_message_id=update.message.message_id,
+            reply_to_message_id=message.message_id,
         )
         return ConversationHandler.END
 
@@ -501,32 +527,31 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         ]
         context.user_data["selected_payees"] = [pid for _, (_, pid) in matched]
 
-    # Flow control: prompt for first missing field
     if not context.user_data.get("expense_title"):
-        await update.message.reply_text(
+        await message.reply_text(
             "Enter expense title:",
             reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
-            reply_to_message_id=update.message.message_id,
+            reply_to_message_id=message.message_id,
         )
         return TITLE
 
     if not context.user_data.get("expense_amount"):
-        await update.message.reply_text(
+        await message.reply_text(
             f"*{context.user_data['expense_title']}*\nEnter amount:",
             parse_mode="Markdown",
             reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
-            reply_to_message_id=update.message.message_id,
+            reply_to_message_id=message.message_id,
         )
         return AMOUNT
 
     if not context.user_data.get("payer_id"):
         title = context.user_data["expense_title"]
         amount = context.user_data["expense_amount"]
-        await update.message.reply_text(
+        await message.reply_text(
             f"*{title}* — {amount:.2f}\n\nWho paid?",
             parse_mode="Markdown",
             reply_markup=participant_keyboard(participants_map, "payer_"),
-            reply_to_message_id=update.message.message_id,
+            reply_to_message_id=message.message_id,
         )
         return PAYER
 
@@ -534,26 +559,64 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
         title = context.user_data["expense_title"]
         amount = context.user_data["expense_amount"]
         payer_name = context.user_data["payer_name"]
-        await update.message.reply_text(
+        await message.reply_text(
             f"*{title}* — {amount:.2f}\nPaid by: {payer_name}\n\nSelect who to split with:",
             parse_mode="Markdown",
             reply_markup=participant_keyboard(
                 participants_map, "payee_", done_btn=("< Done >", "payee_done")
             ),
-            reply_to_message_id=update.message.message_id,
+            reply_to_message_id=message.message_id,
         )
         return PAYEES
 
-    # All fields present
-    text, markup = _store_pending_expense(
+    confirmation_text, markup = _store_pending_expense(
         context.user_data,
-        update.effective_user.id,
-        update.message.message_id,
-        tg_display_name(update),
+        user_id,
+        message.message_id,
+        tg_name,
         context.user_data["selected_payees"],
+        group_id,
     )
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=markup)
+    _reset_add_state(context.user_data)
+    await message.reply_text(confirmation_text, parse_mode="Markdown", reply_markup=markup)
     return ConversationHandler.END
+
+
+async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
+    if not is_allowed_chat(update) or not update.message or not update.effective_user:
+        return ConversationHandler.END
+    assert context.user_data is not None
+    _reset_add_state(context.user_data)
+    resolved = resolve_group(update, context.user_data)
+    if not resolved:
+        if is_dm(update):
+            if not ALL_GROUP_IDS:
+                await update.message.reply_text(
+                    "No groups configured.",
+                    reply_to_message_id=update.message.message_id,
+                )
+                return ConversationHandler.END
+            context.user_data["pending_cmd"] = "add"
+            context.user_data["pending_cmd_text"] = (update.message.text or "").strip()
+            await update.message.reply_text(
+                "Select a group first:",
+                reply_markup=group_picker_keyboard(),
+                reply_to_message_id=update.message.message_id,
+            )
+            return SELECT_GROUP
+        await update.message.reply_text(NO_GROUP_MSG, reply_to_message_id=update.message.message_id)
+        return ConversationHandler.END
+    group_id, client = resolved
+
+    return await _continue_add_flow(
+        update.message,
+        context,
+        update.effective_user.id,
+        tg_display_name(update),
+        group_id,
+        client,
+        (update.message.text or "").strip(),
+    )
 
 
 async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -581,9 +644,11 @@ async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["expense_amount"] = float(match.group(1))
 
-    assert spliit
+    resolved = resolve_group(update, context.user_data)
+    assert resolved
+    _group_id, client = resolved
     try:
-        participants_map = spliit.get_participants()
+        participants_map = client.get_participants()
         context.user_data["participants_map"] = participants_map
     except Exception as e:
         await update.message.reply_text(
@@ -615,12 +680,16 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     pre_selected = context.user_data.get("selected_payees", [])
     if pre_selected:
         assert query.message and update.effective_user
+        resolved = resolve_group(update, context.user_data)
+        assert resolved
+        group_id, _client = resolved
         text, markup = _store_pending_expense(
             context.user_data,
             update.effective_user.id,
             query.message.message_id,
             tg_display_name(update),
             pre_selected,
+            group_id,
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         return ConversationHandler.END
@@ -648,12 +717,16 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return PAYEES
 
         assert query.message
+        resolved = resolve_group(update, context.user_data)
+        assert resolved
+        group_id, _client = resolved
         text, markup = _store_pending_expense(
             context.user_data,
             update.effective_user.id,
             query.message.message_id,
             tg_display_name(update),
             selected,
+            group_id,
         )
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
         return ConversationHandler.END
@@ -679,7 +752,8 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def cancel_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message
+    assert update.message and context.user_data is not None
+    _reset_add_state(context.user_data)
     await update.message.reply_text(
         "Cancelled.",
         reply_to_message_id=update.message.message_id,
@@ -700,11 +774,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await reply_to_callback(query, "Expired. Try again.")
             return
 
-        title, amount, paid_by_id, paid_for, tg_name = info
+        title, amount, paid_by_id, paid_for, tg_name, group_id = info
         expense_title = f"[telebot-{tg_name}] {title}"
         try:
-            assert spliit
-            spliit.add_expense(
+            client = get_spliit(group_id)
+            client.add_expense(
                 title=expense_title,
                 paid_by=paid_by_id,
                 paid_for=paid_for,
@@ -713,7 +787,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if query.message:
                 await query.edit_message_reply_markup(reply_markup=None)
 
-            id_name, currency = id_to_name_map(spliit)
+            id_name, currency = id_to_name_map(client)
             payer_name = id_name.get(paid_by_id, "Unknown")
             payee_names = [id_name.get(pid, "Unknown") for pid, _ in paid_for]
 
@@ -747,12 +821,13 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     elif data.startswith("delyes_"):
         key = data[7:]
-        expense_id = pending_deletes.pop(key, None)
-        if not expense_id:
+        pending_delete = pending_deletes.pop(key, None)
+        if not pending_delete:
             await reply_to_callback(query, "Expired. Try again.")
             return
+        expense_id, group_id = pending_delete
         try:
-            delete_expense(SPLIIT_GROUP_ID, expense_id)
+            delete_expense(group_id, expense_id)
             await reply_to_callback(query, "Deleted.")
         except Exception as e:
             logger.error(f"Failed to delete expense: {e}")
@@ -770,11 +845,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await reply_to_callback(query, "Expired. Try again.")
             return
 
-        from_id, to_id, amount = reimbursement
+        from_id, to_id, amount, group_id = reimbursement
         try:
-            settle_reimbursement(SPLIIT_GROUP_ID, from_id, to_id, amount)
-            assert spliit
-            id_name, currency = id_to_name_map(spliit)
+            client = get_spliit(group_id)
+            settle_reimbursement(group_id, from_id, to_id, amount)
+            id_name, currency = id_to_name_map(client)
             from_name = id_name.get(from_id, from_id)
             to_name = id_name.get(to_id, to_id)
             await reply_to_callback(
@@ -791,3 +866,79 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if key.startswith(f"{key_prefix}_"):
                 pending_settlements.pop(key, None)
         await reply_to_callback(query, "Cancelled.")
+
+    elif data.startswith("selgrp_"):
+        if not is_dm(update):
+            await reply_to_callback(query, "Use /switch in a DM.")
+            return
+        group_id = data[7:]
+        assert context.user_data is not None
+        context.user_data["active_group"] = group_id
+        client = get_spliit(group_id)
+        try:
+            group = client.get_group()
+            label = group["name"]
+        except Exception:
+            label = group_id
+        await reply_to_callback(query, f"Switched to: {label}")
+
+
+async def switch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_allowed_chat(update) or not update.message:
+        return
+    if not is_dm(update):
+        await update.message.reply_text(
+            "Use /switch in a DM.",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+    if not ALL_GROUP_IDS:
+        await update.message.reply_text(
+            "No groups configured.",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+    await update.message.reply_text(
+        "Select a group:",
+        reply_markup=group_picker_keyboard(),
+        reply_to_message_id=update.message.message_id,
+    )
+
+
+async def interactive_select_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    assert query and query.data and context.user_data is not None
+    await query.answer()
+
+    if not query.data.startswith("selgrp_"):
+        return SELECT_GROUP
+
+    group_id = query.data[7:]
+    context.user_data["active_group"] = group_id
+    client = get_spliit(group_id)
+    try:
+        group = client.get_group()
+        label = group["name"]
+    except Exception:
+        label = group_id
+
+    pending_cmd = context.user_data.pop("pending_cmd", None)
+    pending_text = context.user_data.pop("pending_cmd_text", None)
+
+    if pending_cmd == "add":
+        _reset_add_state(context.user_data)
+        await query.edit_message_text(f"Group: {label}")
+        assert update.effective_user and query.message
+        message = cast(Message, query.message)
+        return await _continue_add_flow(
+            message,
+            context,
+            update.effective_user.id,
+            tg_display_name(update),
+            group_id,
+            client,
+            pending_text or "/add",
+        )
+
+    await query.edit_message_text(f"Switched to: {label}")
+    return ConversationHandler.END

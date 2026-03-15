@@ -6,7 +6,14 @@ from spliit import Spliit
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import ADMIN_TELEGRAM_USER_ID, ALLOWED_TELEGRAM_GROUP_ID, SPLIIT_TO_TELEGRAM
+from config import (
+    ADMIN_TELEGRAM_USER_ID,
+    ALL_GROUP_IDS,
+    ALLOWED_TELEGRAM_GROUP_ID,
+    SPLIIT_TO_TELEGRAM,
+    get_group_id,
+    get_spliit,
+)
 
 
 def id_to_name_map(client: Spliit) -> tuple[dict[str, str], str]:
@@ -98,6 +105,36 @@ async def build_mention(name: str, context: ContextTypes.DEFAULT_TYPE) -> str:
         return f'<a href="tg://user?id={tg_id}">{display}</a>'
     except Exception:
         return f'<a href="tg://user?id={tg_id}">{name}</a>'
+
+
+def is_dm(update: Update) -> bool:
+    return update.effective_chat is not None and update.effective_chat.type == "private"
+
+
+def resolve_group(update: Update, user_data: dict | None = None) -> tuple[str, Spliit] | None:
+    if is_dm(update):
+        if user_data and user_data.get("active_group"):
+            gid = user_data["active_group"]
+            return gid, get_spliit(gid)
+        return None
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+    gid = get_group_id(chat_id)
+    if not gid:
+        return None
+    return gid, get_spliit(gid)
+
+
+def group_picker_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for gid in ALL_GROUP_IDS:
+        client = get_spliit(gid)
+        try:
+            group = client.get_group()
+            label = group["name"]
+        except Exception:
+            label = gid
+        rows.append([InlineKeyboardButton(label, callback_data=f"selgrp_{gid}")])
+    return InlineKeyboardMarkup(rows)
 
 
 def is_allowed_chat(update: Update) -> bool:
