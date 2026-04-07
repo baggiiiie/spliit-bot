@@ -650,6 +650,25 @@ class TestCli:
         assert args.amount == 50
         assert args.paid_by == "Baggie"
         assert args.participants == ["Baggie", "Neo"]
+        assert args.date is None
+
+    def test_parser_add_with_date(self):
+        args = build_parser().parse_args(
+            [
+                "add",
+                "Dinner",
+                "50",
+                "--date",
+                "2026-04-07T21:21+08:00",
+                "--paid-by",
+                "Baggie",
+                "--with",
+                "Baggie",
+                "Neo",
+            ]
+        )
+        assert args.command == "add"
+        assert args.date == "2026-04-07T21:21+08:00"
 
     def test_parser_global_spliit_group(self):
         args = build_parser().parse_args(["--spliit-group", "trip-123", "group"])
@@ -736,8 +755,9 @@ class TestCli:
         assert "Created expense" in captured.out
 
     @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch("cli.create_expense")
     @patch("cli.get_spliit")
-    def test_add_cmd(self, mock_get_spliit, mock_idname, capsys):
+    def test_add_cmd(self, mock_get_spliit, mock_create_expense, mock_idname, capsys):
         client = MagicMock()
         mock_get_spliit.return_value = client
 
@@ -745,14 +765,67 @@ class TestCli:
 
         captured = capsys.readouterr()
         assert code == 0
-        client.add_expense.assert_called_once_with(
+        mock_create_expense.assert_called_once_with(
+            group_id="test-group",
             title="[cli] Dinner",
             paid_by="pid-1",
             paid_for=[("pid-1", 1), ("pid-2", 1)],
             amount=5000,
+            expense_date=None,
         )
         assert "Added: Dinner" in captured.out
         assert "Split ($25.00 each): Baggie, Neo" in captured.out
+
+    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch("cli.create_expense")
+    @patch("cli.get_spliit")
+    def test_add_cmd_with_date(self, mock_get_spliit, mock_create_expense, mock_idname, capsys):
+        client = MagicMock()
+        mock_get_spliit.return_value = client
+
+        code = cli_add_cmd(
+            "Dinner",
+            50,
+            "Baggie",
+            ["Baggie", "Neo"],
+            "test-group",
+            expense_date="2026-04-07T21:21+08:00",
+        )
+
+        captured = capsys.readouterr()
+        assert code == 0
+        mock_create_expense.assert_called_once_with(
+            group_id="test-group",
+            title="[cli] Dinner",
+            paid_by="pid-1",
+            paid_for=[("pid-1", 1), ("pid-2", 1)],
+            amount=5000,
+            expense_date="2026-04-07T13:21:00.000Z",
+        )
+        assert "Date: 2026-04-07T21:21+08:00" in captured.out
+
+    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch("cli.create_expense")
+    @patch("cli.get_spliit")
+    def test_add_cmd_with_invalid_date(
+        self, mock_get_spliit, mock_create_expense, mock_idname, capsys
+    ):
+        client = MagicMock()
+        mock_get_spliit.return_value = client
+
+        code = cli_add_cmd(
+            "Dinner",
+            50,
+            "Baggie",
+            ["Baggie", "Neo"],
+            "test-group",
+            expense_date="not-a-date",
+        )
+
+        captured = capsys.readouterr()
+        assert code == 1
+        mock_create_expense.assert_not_called()
+        assert "Invalid --date." in captured.err
 
     @patch("cli.get_activities", return_value=FAKE_ACTIVITIES[:1])
     @patch("cli.delete_expense")

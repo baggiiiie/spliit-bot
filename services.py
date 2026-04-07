@@ -48,22 +48,34 @@ def delete_expense(group_id: str, expense_id: str) -> None:
     response.raise_for_status()
 
 
-def settle_reimbursement(group_id: str, from_id: str, to_id: str, amount: int) -> None:
+def create_expense(
+    group_id: str,
+    title: str,
+    paid_by: str,
+    paid_for: list[tuple[str, int]],
+    amount: int,
+    expense_date: str | None = None,
+    category: int = 0,
+    is_reimbursement: bool = False,
+) -> None:
     params = {"batch": "1"}
     json_data = {
         "0": {
             "json": {
                 "groupId": group_id,
                 "expenseFormValues": {
-                    "expenseDate": get_current_timestamp(),
-                    "title": "Reimbursement",
-                    "category": 1,
+                    "expenseDate": expense_date or get_current_timestamp(),
+                    "title": title,
+                    "category": category,
                     "amount": amount,
-                    "paidBy": from_id,
-                    "paidFor": [{"participant": to_id, "shares": 1}],
+                    "paidBy": paid_by,
+                    "paidFor": [
+                        {"participant": participant_id, "shares": shares}
+                        for participant_id, shares in paid_for
+                    ],
                     "splitMode": "EVENLY",
                     "saveDefaultSplittingOptions": False,
-                    "isReimbursement": True,
+                    "isReimbursement": is_reimbursement,
                     "documents": [],
                     "notes": "",
                 },
@@ -82,3 +94,15 @@ def settle_reimbursement(group_id: str, from_id: str, to_id: str, amount: int) -
         json=json_data,
     )
     response.raise_for_status()
+
+
+def settle_reimbursement(group_id: str, from_id: str, to_id: str, amount: int) -> None:
+    create_expense(
+        group_id=group_id,
+        title="Reimbursement",
+        paid_by=from_id,
+        paid_for=[(to_id, 1)],
+        amount=amount,
+        category=1,
+        is_reimbursement=True,
+    )

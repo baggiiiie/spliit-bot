@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import UTC, datetime
 from typing import Any
 
 from spliit import Spliit
 
 from config import get_spliit
 from helpers import id_to_name_map
-from services import delete_expense, get_activities, get_balances, settle_reimbursement
+from services import (
+    create_expense,
+    delete_expense,
+    get_activities,
+    get_balances,
+    settle_reimbursement,
+)
 
 ACTIVITY_LABELS = {
     "CREATE_EXPENSE": "Created expense",
@@ -99,12 +106,32 @@ def latest_cmd(limit: int, group_id: str | None = None) -> int:
     return 0
 
 
+def _parse_expense_date(value: str) -> str:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(
+            "Invalid --date. Use ISO 8601, e.g. 2026-04-07, "
+            "2026-04-07T21:21, or 2026-04-07T21:21+08:00."
+        ) from exc
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+
+    return parsed.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def add_cmd(
     title: str,
     amount: float,
     paid_by: str,
     participants: list[str],
     group_id: str | None = None,
+    expense_date: str | None = None,
 ) -> int:
     resolved = _resolve_target(group_id)
     if not resolved:
@@ -126,15 +153,27 @@ def add_cmd(
     for name in participants:
         payee_ids.append((name_id[name.lower()], 1))
 
-    client.add_expense(
+    parsed_expense_date: str | None = None
+    if expense_date:
+        try:
+            parsed_expense_date = _parse_expense_date(expense_date)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+
+    create_expense(
+        group_id=_resolved_group_id,
         title=f"[cli] {title}",
         paid_by=payer_id,
         paid_for=payee_ids,
         amount=round(amount * 100),
+        expense_date=parsed_expense_date,
     )
     share = amount / len(participants)
     print(f"Added: {title}")
     print(f"Amount: {currency}{amount:.2f}")
+    if expense_date:
+        print(f"Date: {expense_date}")
     print(f"Paid by: {paid_by}")
     print(f"Split ({currency}{share:.2f} each): {', '.join(participants)}")
     return 0
@@ -275,6 +314,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser = subparsers.add_parser("add", help="Add an expense")
     add_parser.add_argument("title", help="Expense title")
     add_parser.add_argument("amount", type=float, help="Expense amount in group currency")
+    add_parser.add_argument(
+        "--date",
+        help="Expense date/time in ISO 8601, e.g. 2026-04-07 or 2026-04-07T21:21+08:00",
+    )
     add_parser.add_argument("--paid-by", required=True, help="Participant who paid")
     add_parser.add_argument(
         "--with",
@@ -315,7 +358,14 @@ def main() -> int:
     if args.command == "latest":
         return latest_cmd(args.limit, args.spliit_group)
     if args.command == "add":
-        return add_cmd(args.title, args.amount, args.paid_by, args.participants, args.spliit_group)
+        return add_cmd(
+            args.title,
+            args.amount,
+            args.paid_by,
+            args.participants,
+            group_id=args.spliit_group,
+            expense_date=args.date,
+        )
     if args.command == "undo":
         return undo_cmd(args.index, args.yes, args.spliit_group)
     if args.command == "settle" and args.settle_command == "list":

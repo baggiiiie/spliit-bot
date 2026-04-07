@@ -41,6 +41,7 @@ uv run spliit-cli --spliit-group <GROUP_ID> group
 uv run spliit-cli --spliit-group <GROUP_ID> balance
 uv run spliit-cli --spliit-group <GROUP_ID> latest 5
 uv run spliit-cli --spliit-group <GROUP_ID> add "Dinner" 50 --paid-by Baggie --with Baggie Neo
+uv run spliit-cli --spliit-group <GROUP_ID> add "Taxi" 20.6 --date "2026-04-07T21:21+08:00" --paid-by Baggie --with Baggie Neo
 uv run spliit-cli --spliit-group <GROUP_ID> undo
 uv run spliit-cli --spliit-group <GROUP_ID> settle list
 uv run spliit-cli --spliit-group <GROUP_ID> settle pay 1
