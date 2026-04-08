@@ -1,24 +1,10 @@
-"""Telegram UI helpers and utility functions."""
+"""Pure Telegram UI helpers and chat validation."""
 
 from __future__ import annotations
 
-from spliit import Spliit
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import ContextTypes
 
-from config import (
-    ADMIN_TELEGRAM_USER_ID,
-    ALL_GROUP_IDS,
-    ALLOWED_TELEGRAM_GROUP_ID,
-    SPLIIT_TO_TELEGRAM,
-    get_group_id,
-    get_spliit,
-)
-
-
-def id_to_name_map(client: Spliit) -> tuple[dict[str, str], str]:
-    group = client.get_group()
-    return {p["id"]: p["name"] for p in group["participants"]}, group["currency"]
+from config import ADMIN_TELEGRAM_USER_ID, ALLOWED_TELEGRAM_GROUP_ID, get_group_id
 
 
 def participant_keyboard(
@@ -87,53 +73,29 @@ def format_confirmation(title: str, amount: float, payer: str, payees: list[str]
 
 
 def tg_display_name(update: Update) -> str:
-    u = update.effective_user
-    if not u:
+    user = update.effective_user
+    if not user:
         return "unknown"
-    return u.first_name or u.username or "unknown"
-
-
-async def build_mention(name: str, context: ContextTypes.DEFAULT_TYPE) -> str:
-    tg_id = SPLIIT_TO_TELEGRAM.get(name.lower())
-    if not tg_id:
-        return name
-    try:
-        chat = await context.bot.get_chat(int(tg_id))
-        if chat.username:
-            return f"@{chat.username}"
-        display = chat.first_name or name
-        return f'<a href="tg://user?id={tg_id}">{display}</a>'
-    except Exception:
-        return f'<a href="tg://user?id={tg_id}">{name}</a>'
+    return user.first_name or user.username or "unknown"
 
 
 def is_dm(update: Update) -> bool:
     return update.effective_chat is not None and update.effective_chat.type == "private"
 
 
-def resolve_group(update: Update, user_data: dict | None = None) -> tuple[str, Spliit] | None:
+def resolve_group_id(update: Update, user_data: dict | None = None) -> str | None:
     if is_dm(update):
-        if user_data and user_data.get("active_group"):
-            gid = user_data["active_group"]
-            return gid, get_spliit(gid)
-        return None
+        active_group = user_data.get("active_group") if user_data else None
+        return str(active_group) if active_group else None
     chat_id = str(update.effective_chat.id) if update.effective_chat else ""
-    gid = get_group_id(chat_id)
-    if not gid:
-        return None
-    return gid, get_spliit(gid)
+    return get_group_id(chat_id)
 
 
-def group_picker_keyboard() -> InlineKeyboardMarkup:
-    rows = []
-    for gid in ALL_GROUP_IDS:
-        client = get_spliit(gid)
-        try:
-            group = client.get_group()
-            label = group["name"]
-        except Exception:
-            label = gid
-        rows.append([InlineKeyboardButton(label, callback_data=f"selgrp_{gid}")])
+def group_picker_keyboard(group_options: list[tuple[str, str]]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"selgrp_{group_id}")]
+        for label, group_id in group_options
+    ]
     return InlineKeyboardMarkup(rows)
 
 

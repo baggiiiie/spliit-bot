@@ -3,12 +3,11 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import UTC, datetime
-from typing import Any
 
 from spliit import Spliit
 
 from config import get_spliit
-from helpers import id_to_name_map
+from domain import activity_label, activity_subject, id_to_name_map, undoable_activity
 from services import (
     create_expense,
     delete_expense,
@@ -16,13 +15,6 @@ from services import (
     get_balances,
     settle_reimbursement,
 )
-
-ACTIVITY_LABELS = {
-    "CREATE_EXPENSE": "Created expense",
-    "UPDATE_EXPENSE": "Updated expense",
-    "DELETE_EXPENSE": "Deleted expense",
-    "UPDATE_GROUP": "Updated group",
-}
 
 
 def _resolve_target(group_id: str | None) -> tuple[str, Spliit] | None:
@@ -100,8 +92,9 @@ def latest_cmd(limit: int, group_id: str | None = None) -> int:
 
     print(f"Latest {len(activities)} activities")
     for index, activity in enumerate(activities, start=1):
-        label = ACTIVITY_LABELS.get(activity["activityType"], activity["activityType"])
-        print(f"{index}. {label}: {_activity_subject(activity)}")
+        label = activity_label(str(activity["activityType"]))
+        subject = activity_subject(activity)
+        print(f"{index}. {label}: {subject}")
 
     return 0
 
@@ -179,26 +172,6 @@ def add_cmd(
     return 0
 
 
-def _activity_subject(activity: dict[str, Any]) -> str:
-    if data := activity.get("data"):
-        return str(data)
-    if isinstance(activity.get("expense"), dict):
-        expense = activity["expense"]
-        title = expense.get("title")
-        if title:
-            return str(title)
-    return "Untitled"
-
-
-def _undoable_activity(activity: dict[str, Any]) -> tuple[str, str] | None:
-    if activity.get("activityType") != "CREATE_EXPENSE":
-        return None
-    expense_id = activity.get("expenseId")
-    if not expense_id or not activity.get("expense"):
-        return None
-    return str(expense_id), _activity_subject(activity)
-
-
 def undo_cmd(index: int, assume_yes: bool, group_id: str | None = None) -> int:
     resolved = _resolve_target(group_id)
     if not resolved:
@@ -217,7 +190,7 @@ def undo_cmd(index: int, assume_yes: bool, group_id: str | None = None) -> int:
         return 1
 
     activity = activities[index - 1]
-    undoable = _undoable_activity(activity)
+    undoable = undoable_activity(activity)
     if not undoable:
         print("This activity can't be undone. Only newly created expenses can be undone.")
         return 1
@@ -230,9 +203,8 @@ def undo_cmd(index: int, assume_yes: bool, group_id: str | None = None) -> int:
             return 0
 
     delete_expense(resolved_group_id, expense_id)
-    label = ACTIVITY_LABELS.get(str(activity["activityType"]), str(activity["activityType"]))
     print("Undid:")
-    print(f"- {label}: {title}")
+    print(f"- {activity_label(str(activity['activityType']))}: {title}")
     return 0
 
 

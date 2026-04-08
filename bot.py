@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Spliit Telegram Bot - Manage Spliit expenses via Telegram."""
 
+from __future__ import annotations
+
 import traceback
 
 from telegram import Update

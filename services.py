@@ -6,46 +6,64 @@ from typing import Any
 import httpx
 from spliit.utils import get_current_timestamp
 
+TRPC_BASE_URL = "https://spliit.app/api/trpc"
+TRPC_BATCH_PARAMS = {"batch": "1"}
+TRPC_TIMEOUT = 30
+
+
+def _trpc_get(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    response = httpx.get(
+        f"{TRPC_BASE_URL}/{path}",
+        params={
+            **TRPC_BATCH_PARAMS,
+            "input": json.dumps({"0": {"json": payload}}),
+        },
+        timeout=TRPC_TIMEOUT,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data[0]["result"]["data"]["json"]
+
+
+def _trpc_post(path: str, payload: dict[str, Any], meta: dict[str, Any] | None = None) -> None:
+    request_body: dict[str, Any] = {"0": {"json": payload}}
+    if meta:
+        request_body["0"]["meta"] = meta
+
+    response = httpx.post(
+        f"{TRPC_BASE_URL}/{path}",
+        params=TRPC_BATCH_PARAMS,
+        json=request_body,
+        timeout=TRPC_TIMEOUT,
+    )
+    response.raise_for_status()
+
 
 def get_balances(group_id: str) -> dict[str, Any]:
-    params_input = {"0": {"json": {"groupId": group_id}}}
-    params = {"batch": "1", "input": json.dumps(params_input)}
-    response = httpx.get("https://spliit.app/api/trpc/groups.balances.list", params=params)
-    return response.json()[0]["result"]["data"]["json"]
+    return _trpc_get("groups.balances.list", {"groupId": group_id})
 
 
 def get_expenses(group_id: str) -> list[dict[str, Any]]:
-    params_input = {"0": {"json": {"groupId": group_id}}}
-    params = {"batch": "1", "input": json.dumps(params_input)}
-    response = httpx.get("https://spliit.app/api/trpc/groups.expenses.list", params=params)
-    data = response.json()
-    return data[0]["result"]["data"]["json"]["expenses"]
+    data = _trpc_get("groups.expenses.list", {"groupId": group_id})
+    return data["expenses"]
 
 
 def get_activities(group_id: str, limit: int, cursor: int = 0) -> list[dict[str, Any]]:
-    params_input = {"0": {"json": {"groupId": group_id, "cursor": cursor, "limit": limit}}}
-    params = {"batch": "1", "input": json.dumps(params_input)}
-    response = httpx.get("https://spliit.app/api/trpc/groups.activities.list", params=params)
-    data = response.json()
-    return data[0]["result"]["data"]["json"]["activities"]
+    data = _trpc_get(
+        "groups.activities.list",
+        {"groupId": group_id, "cursor": cursor, "limit": limit},
+    )
+    return data["activities"]
 
 
 def delete_expense(group_id: str, expense_id: str) -> None:
-    params = {"batch": "1"}
-    json_data = {
-        "0": {
-            "json": {
-                "groupId": group_id,
-                "expenseId": expense_id,
-            },
+    _trpc_post(
+        "groups.expenses.delete",
+        {
+            "groupId": group_id,
+            "expenseId": expense_id,
         },
-    }
-    response = httpx.post(
-        "https://spliit.app/api/trpc/groups.expenses.delete",
-        params=params,
-        json=json_data,
     )
-    response.raise_for_status()
 
 
 def create_expense(
@@ -58,42 +76,34 @@ def create_expense(
     category: int = 0,
     is_reimbursement: bool = False,
 ) -> None:
-    params = {"batch": "1"}
-    json_data = {
-        "0": {
-            "json": {
-                "groupId": group_id,
-                "expenseFormValues": {
-                    "expenseDate": expense_date or get_current_timestamp(),
-                    "title": title,
-                    "category": category,
-                    "amount": amount,
-                    "paidBy": paid_by,
-                    "paidFor": [
-                        {"participant": participant_id, "shares": shares}
-                        for participant_id, shares in paid_for
-                    ],
-                    "splitMode": "EVENLY",
-                    "saveDefaultSplittingOptions": False,
-                    "isReimbursement": is_reimbursement,
-                    "documents": [],
-                    "notes": "",
-                },
-                "participantId": "None",
+    _trpc_post(
+        "groups.expenses.create",
+        {
+            "groupId": group_id,
+            "expenseFormValues": {
+                "expenseDate": expense_date or get_current_timestamp(),
+                "title": title,
+                "category": category,
+                "amount": amount,
+                "paidBy": paid_by,
+                "paidFor": [
+                    {"participant": participant_id, "shares": shares}
+                    for participant_id, shares in paid_for
+                ],
+                "splitMode": "EVENLY",
+                "saveDefaultSplittingOptions": False,
+                "isReimbursement": is_reimbursement,
+                "documents": [],
+                "notes": "",
             },
-            "meta": {
-                "values": {
-                    "expenseFormValues.expenseDate": ["Date"],
-                }
-            },
-        }
-    }
-    response = httpx.post(
-        "https://spliit.app/api/trpc/groups.expenses.create",
-        params=params,
-        json=json_data,
+            "participantId": "None",
+        },
+        meta={
+            "values": {
+                "expenseFormValues.expenseDate": ["Date"],
+            }
+        },
     )
-    response.raise_for_status()
 
 
 def settle_reimbursement(group_id: str, from_id: str, to_id: str, amount: int) -> None:

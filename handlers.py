@@ -24,21 +24,31 @@ from config import (
     pending_deletes,
     pending_settlements,
 )
+from domain import (
+    format_activity_line_html,
+    group_picker_options,
+    id_to_name_map,
+    undoable_activity,
+)
 from helpers import (
-    build_mention,
     confirm_keyboard,
     format_confirmation,
     group_picker_keyboard,
-    id_to_name_map,
     is_allowed_chat,
     is_dm,
     participant_keyboard,
     reimbursement_keyboard,
-    resolve_group,
+    resolve_group_id,
     tg_display_name,
 )
 from parsing import parse_add_command, parse_with_llm
-from services import delete_expense, get_activities, get_balances, settle_reimbursement
+from services import (
+    create_expense,
+    delete_expense,
+    get_activities,
+    get_balances,
+    settle_reimbursement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +57,27 @@ NO_GROUP_MSG = "No group linked to this chat."
 DM_NO_GROUP_MSG = "No group selected. Use /switch to pick one."
 
 
-ACTIVITY_LABELS = {
-    "CREATE_EXPENSE": "Created expense",
-    "UPDATE_EXPENSE": "Updated expense",
-    "DELETE_EXPENSE": "Deleted expense",
-    "UPDATE_GROUP": "Updated group",
-}
+def resolve_group(update: Update, user_data: dict | None = None) -> tuple[str, Spliit] | None:
+    group_id = resolve_group_id(update, user_data)
+    if not group_id:
+        return None
+    return group_id, get_spliit(group_id)
+
+
+async def build_mention(name: str, context: ContextTypes.DEFAULT_TYPE) -> str:
+    from config import SPLIIT_TO_TELEGRAM
+
+    tg_id = SPLIIT_TO_TELEGRAM.get(name.lower())
+    if not tg_id:
+        return name
+    try:
+        chat = await context.bot.get_chat(int(tg_id))
+        if chat.username:
+            return f"@{chat.username}"
+        display = chat.first_name or name
+        return f'<a href="tg://user?id={tg_id}">{display}</a>'
+    except Exception:
+        return f'<a href="tg://user?id={tg_id}">{name}</a>'
 
 
 async def reply_to_callback(query: Any, text: str) -> None:
@@ -81,27 +106,28 @@ def _parse_count_arg(context: ContextTypes.DEFAULT_TYPE, default: int) -> int | 
     return count
 
 
-def _activity_subject(activity: dict[str, Any]) -> str:
-    if activity.get("data"):
-        return str(activity["data"])
-    if expense := activity.get("expense"):
-        return str(expense.get("title", "Untitled"))
-    return "Untitled"
+async def _require_group(
+    update: Update,
+    user_data: dict | None,
+    message: Message,
+) -> tuple[str, Spliit] | None:
+    resolved = resolve_group(update, user_data)
+    if resolved:
+        return resolved
+    msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
+    await message.reply_text(msg, reply_to_message_id=message.message_id)
+    return None
 
 
-def _format_activity_line(activity: dict[str, Any], index: int) -> str:
-    label = ACTIVITY_LABELS.get(activity["activityType"], activity["activityType"])
-    subject = html.escape(_activity_subject(activity))
-    return f"{index}. <b>{label}</b>: {subject}"
-
-
-def _undoable_activity(activity: dict[str, Any]) -> tuple[str, str] | None:
-    if activity["activityType"] != "CREATE_EXPENSE":
-        return None
-    expense_id = activity.get("expenseId")
-    if not expense_id or not activity.get("expense"):
-        return None
-    return expense_id, _activity_subject(activity)
+def _group_name(client: Spliit, group_id: str) -> str:
+    try:
+        group = client.get_group()
+    except Exception:
+        return group_id
+    if not isinstance(group, dict):
+        return group_id
+    name = group.get("name")
+    return str(name) if name else group_id
 
 
 def _store_pending_expense(
@@ -197,10 +223,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    resolved = resolve_group(update, context.user_data)
+    resolved = await _require_group(update, context.user_data, update.message)
     if not resolved:
-        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
-        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
     group_id, client = resolved
 
@@ -242,10 +266,8 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    resolved = resolve_group(update, context.user_data)
+    resolved = await _require_group(update, context.user_data, update.message)
     if not resolved:
-        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
-        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
     group_id, _client = resolved
 
@@ -268,7 +290,7 @@ async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
         lines = [f"<b>Latest {len(activities)} activities</b>\n"]
         for index, activity in enumerate(activities, start=1):
-            lines.append(_format_activity_line(activity, index))
+            lines.append(format_activity_line_html(activity, index))
 
         await update.message.reply_text(
             "\n".join(lines),
@@ -286,10 +308,8 @@ async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message or not update.effective_user:
         return
-    resolved = resolve_group(update, context.user_data)
+    resolved = await _require_group(update, context.user_data, update.message)
     if not resolved:
-        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
-        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
     group_id, client = resolved
 
@@ -347,10 +367,8 @@ async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    resolved = resolve_group(update, context.user_data)
+    resolved = await _require_group(update, context.user_data, update.message)
     if not resolved:
-        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
-        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
     group_id, _client = resolved
 
@@ -379,7 +397,7 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         activity = activities[count - 1]
-        undoable = _undoable_activity(activity)
+        undoable = undoable_activity(activity)
         if not undoable:
             await update.message.reply_text(
                 "This activity can't be undone. Only newly created expenses can be undone.",
@@ -393,7 +411,7 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         pending_deletes[key] = (expense_id, group_id)
 
         await update.message.reply_text(
-            f"Undo activity #{count}?\n\n{_format_activity_line(activity, count)}",
+            f"Undo activity #{count}?\n\n{format_activity_line_html(activity, count)}",
             parse_mode="HTML",
             reply_to_message_id=update.message.message_id,
             reply_markup=InlineKeyboardMarkup(
@@ -416,10 +434,8 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    resolved = resolve_group(update, context.user_data)
+    resolved = await _require_group(update, context.user_data, update.message)
     if not resolved:
-        msg = DM_NO_GROUP_MSG if is_dm(update) else NO_GROUP_MSG
-        await update.message.reply_text(msg, reply_to_message_id=update.message.message_id)
         return
     _group_id, client = resolved
 
@@ -600,7 +616,7 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
             context.user_data["pending_cmd_text"] = (update.message.text or "").strip()
             await update.message.reply_text(
                 "Select a group first:",
-                reply_markup=group_picker_keyboard(),
+                reply_markup=group_picker_keyboard(group_picker_options()),
                 reply_to_message_id=update.message.message_id,
             )
             return SELECT_GROUP
@@ -777,8 +793,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         title, amount, paid_by_id, paid_for, tg_name, group_id = info
         expense_title = f"[telebot-{tg_name}] {title}"
         try:
-            client = get_spliit(group_id)
-            client.add_expense(
+            create_expense(
+                group_id=group_id,
                 title=expense_title,
                 paid_by=paid_by_id,
                 paid_for=paid_for,
@@ -787,6 +803,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if query.message:
                 await query.edit_message_reply_markup(reply_markup=None)
 
+            client = get_spliit(group_id)
             id_name, currency = id_to_name_map(client)
             payer_name = id_name.get(paid_by_id, "Unknown")
             payee_names = [id_name.get(pid, "Unknown") for pid, _ in paid_for]
@@ -875,12 +892,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         assert context.user_data is not None
         context.user_data["active_group"] = group_id
         client = get_spliit(group_id)
-        try:
-            group = client.get_group()
-            label = group["name"]
-        except Exception:
-            label = group_id
-        await reply_to_callback(query, f"Switched to: {label}")
+        await reply_to_callback(query, f"Switched to: {_group_name(client, group_id)}")
 
 
 async def switch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -900,7 +912,7 @@ async def switch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
     await update.message.reply_text(
         "Select a group:",
-        reply_markup=group_picker_keyboard(),
+        reply_markup=group_picker_keyboard(group_picker_options()),
         reply_to_message_id=update.message.message_id,
     )
 
@@ -916,11 +928,7 @@ async def interactive_select_group(update: Update, context: ContextTypes.DEFAULT
     group_id = query.data[7:]
     context.user_data["active_group"] = group_id
     client = get_spliit(group_id)
-    try:
-        group = client.get_group()
-        label = group["name"]
-    except Exception:
-        label = group_id
+    label = _group_name(client, group_id)
 
     pending_cmd = context.user_data.pop("pending_cmd", None)
     pending_text = context.user_data.pop("pending_cmd_text", None)
