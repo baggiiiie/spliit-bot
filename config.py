@@ -9,6 +9,8 @@ import os
 from dotenv import load_dotenv
 from spliit import Spliit
 
+from constants import PendingDelete, PendingExpense, PendingSettlement
+
 load_dotenv()
 
 logging.basicConfig(
@@ -73,13 +75,6 @@ def get_group_id(chat_id: str) -> str | None:
     return GROUPS.get(chat_id)
 
 
-type PaidFor = list[tuple[str, int]]
-type PendingExpense = tuple[str, int, str, PaidFor, str, str]
-type PendingDelete = tuple[str, str]
-type PendingSettlement = tuple[str, str, int, str]
-
 pending: dict[str, PendingExpense] = {}
 pending_deletes: dict[str, PendingDelete] = {}
 pending_settlements: dict[str, PendingSettlement] = {}
-
-TITLE, AMOUNT, PAYER, PAYEES, SELECT_GROUP = range(5)

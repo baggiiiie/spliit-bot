@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from spliit import Spliit
 
 from config import get_spliit
+from constants import format_money
 from domain import activity_label, activity_subject, id_to_name_map, undoable_activity
 from services import (
     create_expense,
@@ -60,9 +61,9 @@ def balance_cmd(group_id: str | None = None) -> int:
     print(f"{group['name']} balances")
     print()
     for pid, data in balances.items():
-        total = data["total"] / 100
+        total = data["total"]
         sign = "+" if total > 0 else ""
-        print(f"- {id_name.get(pid, pid)}: {sign}{currency}{total:.2f}")
+        print(f"- {id_name.get(pid, pid)}: {sign}{format_money(total, currency)}")
 
     if reimbursements:
         print()
@@ -70,8 +71,7 @@ def balance_cmd(group_id: str | None = None) -> int:
         for reimbursement in reimbursements:
             from_name = id_name.get(reimbursement["from"], reimbursement["from"])
             to_name = id_name.get(reimbursement["to"], reimbursement["to"])
-            amount = reimbursement["amount"] / 100
-            print(f"- {from_name} -> {to_name}: {currency}{amount:.2f}")
+            print(f"- {from_name} -> {to_name}: {format_money(reimbursement['amount'], currency)}")
 
     return 0
 
@@ -223,8 +223,9 @@ def list_reimbursements(group_id: str | None = None) -> int:
     for index, reimbursement in enumerate(reimbursements, start=1):
         from_name = id_name.get(reimbursement["from"], reimbursement["from"])
         to_name = id_name.get(reimbursement["to"], reimbursement["to"])
-        amount = reimbursement["amount"] / 100
-        print(f"{index}. {from_name} -> {to_name} ({currency}{amount:.2f})")
+        print(
+            f"{index}. {from_name} -> {to_name} ({format_money(reimbursement['amount'], currency)})"
+        )
 
     return 0
 
@@ -251,18 +252,18 @@ def mark_reimbursement_paid(index: int, assume_yes: bool, group_id: str | None =
     amount = reimbursement["amount"]
     from_name = id_name.get(from_id, from_id)
     to_name = id_name.get(to_id, to_id)
-    amount_display = amount / 100
+    amount_display = format_money(amount, currency)
 
     if not assume_yes:
         response = input(
-            f"Mark as paid: {from_name} -> {to_name} ({currency}{amount_display:.2f})? [y/N] "
+            f"Mark as paid: {from_name} -> {to_name} ({amount_display})? [y/N] "
         ).strip()
         if response.lower() not in {"y", "yes"}:
             print("Cancelled.")
             return 0
 
     settle_reimbursement(resolved_group_id, from_id, to_id, amount)
-    print(f"Marked as paid: {from_name} -> {to_name} ({currency}{amount_display:.2f})")
+    print(f"Marked as paid: {from_name} -> {to_name} ({amount_display})")
     return 0
 
 

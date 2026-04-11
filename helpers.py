@@ -5,6 +5,7 @@ from __future__ import annotations
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 from config import ADMIN_TELEGRAM_USER_ID, ALLOWED_TELEGRAM_GROUP_ID, get_group_id
+from constants import CB_CANCEL, CB_CONFIRM, CB_PAYEE_ALL, CB_SELECT_GROUP
 
 
 def participant_keyboard(
@@ -29,7 +30,7 @@ def participant_keyboard(
             [
                 InlineKeyboardButton(
                     "Deselect All" if all_selected else "Select All",
-                    callback_data=f"{prefix}all",
+                    callback_data=f"{prefix}{CB_PAYEE_ALL}",
                 ),
                 InlineKeyboardButton(done_btn[0], callback_data=done_btn[1]),
             ]
@@ -41,8 +42,8 @@ def confirm_keyboard(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("Confirm", callback_data=f"yes_{key}"),
-                InlineKeyboardButton("Cancel", callback_data=f"no_{key}"),
+                InlineKeyboardButton("Confirm", callback_data=f"{CB_CONFIRM}{key}"),
+                InlineKeyboardButton("Cancel", callback_data=f"{CB_CANCEL}{key}"),
             ]
         ]
     )
@@ -93,7 +94,7 @@ def resolve_group_id(update: Update, user_data: dict | None = None) -> str | Non
 
 def group_picker_keyboard(group_options: list[tuple[str, str]]) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(label, callback_data=f"selgrp_{group_id}")]
+        [InlineKeyboardButton(label, callback_data=f"{CB_SELECT_GROUP}{group_id}")]
         for label, group_id in group_options
     ]
     return InlineKeyboardMarkup(rows)

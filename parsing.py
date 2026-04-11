@@ -55,7 +55,7 @@ def parse_add_command(
     return ParsedExpense(title=title, amount=amount, participants=[n.lower() for n in matched])
 
 
-def parse_with_llm(
+async def parse_with_llm(
     text: str, participant_names: list[str]
 ) -> tuple[ParsedExpense | str | None, str | None]:
     prompt = PROMPT_TEMPLATE.format(
@@ -69,8 +69,8 @@ def parse_with_llm(
             logger.error("GROQ_API_KEY is not set")
             return _LLM_ERROR_MSG, None
 
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
                 f"{GROQ_API_BASE_URL.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
                 json={

@@ -18,18 +18,23 @@ from telegram.ext import (
 
 from config import (
     ADMIN_TELEGRAM_USER_ID,
-    AMOUNT,
     BOT_MODE,
     HEALTH_HTTP_PORT,
-    PAYEES,
-    PAYER,
-    SELECT_GROUP,
     TELEGRAM_BOT_TOKEN,
-    TITLE,
     WEBHOOK_PORT,
     WEBHOOK_SECRET,
     WEBHOOK_URL,
     logger,
+)
+from constants import (
+    AMOUNT,
+    CB_PAYEE,
+    CB_PAYER,
+    CB_SELECT_GROUP,
+    PAYEES,
+    PAYER,
+    SELECT_GROUP,
+    TITLE,
 )
 from handlers import (
     add_cmd,
@@ -105,11 +110,13 @@ def main() -> None:
     add_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("add", add_cmd)],
         states={
-            SELECT_GROUP: [CallbackQueryHandler(interactive_select_group, pattern=r"^selgrp_")],
+            SELECT_GROUP: [
+                CallbackQueryHandler(interactive_select_group, pattern=rf"^{CB_SELECT_GROUP}")
+            ],
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_title)],
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_amount)],
-            PAYER: [CallbackQueryHandler(interactive_payer, pattern=r"^payer_")],
-            PAYEES: [CallbackQueryHandler(interactive_payees, pattern=r"^payee_")],
+            PAYER: [CallbackQueryHandler(interactive_payer, pattern=rf"^{CB_PAYER}")],
+            PAYEES: [CallbackQueryHandler(interactive_payees, pattern=rf"^{CB_PAYEE}")],
         },
         fallbacks=[CommandHandler("cancel", cancel_interactive)],
     )

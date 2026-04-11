@@ -20,12 +20,19 @@ Run `-m llm` tests only when `prompt.txt` changes.
 ## Files
 
 - `bot.py`: entrypoint only; registers Telegram handlers and starts polling/webhook
-- `config.py`: env vars, constants, shared state, type aliases
-- `handlers.py`: Telegram command/callback handlers
+- `config.py`: env vars, shared state (pending dicts, Spliit client cache)
+- `constants.py`: callback prefixes, conversation states, pending-state dataclasses, `format_money`
+- `handlers/`: Telegram command/callback handlers (package)
+  - `__init__.py`: re-exports all public handlers
+  - `common.py`: shared handler utilities (`resolve_group`, `build_mention`, `_require_group`, etc.)
+  - `commands.py`: simple command handlers (`start`, `group_cmd`, `balance_cmd`, `latest_cmd`, `settle_cmd`, `undo_cmd`, `switch_cmd`)
+  - `add_flow.py`: `/add` ConversationHandler flow (`add_cmd`, `interactive_*`, `cancel_interactive`)
+  - `callbacks.py`: inline callback-query dispatcher (`button`)
 - `helpers.py`: pure Telegram UI helpers and chat validation
 - `health_http.py`: GET `/up` health server (e.g. ONCE)
-- `parsing.py`: expense parsing only
+- `parsing.py`: expense parsing only (async LLM calls)
 - `services.py`: Spliit HTTP calls
+- `domain.py`: interface-agnostic Spliit helpers shared by bot and CLI
 - `cli.py`: local CLI that mirrors bot flows
 - `prompt.txt`: LLM prompt template
 - `test_bot.py`: unit tests and LLM integration tests
@@ -34,11 +41,14 @@ Run `-m llm` tests only when `prompt.txt` changes.
 
 - Keep `bot.py` thin. No business logic there.
 - Read environment variables only in `config.py`.
-- Keep Telegram-specific flow in `handlers.py`.
+- Keep Telegram-specific flow in `handlers/`.
 - Keep `helpers.py` pure: no handler logic, no HTTP calls.
 - Keep `parsing.py` focused on parsing. No Telegram imports.
 - Put Spliit API access in `services.py`.
-- Avoid circular imports. Preferred flow: `bot.py` -> `handlers.py` -> `helpers.py` / `parsing.py` / `services.py` -> `config.py`.
+- Use callback prefix constants from `constants.py`, never magic strings.
+- Use pending-state dataclasses (`PendingExpense`, `PendingDelete`, `PendingSettlement`), never raw tuples.
+- Use `format_money()` for cents→display formatting, never inline `/ 100`.
+- Avoid circular imports. Preferred flow: `bot.py` -> `handlers/` -> `helpers.py` / `parsing.py` / `services.py` / `domain.py` -> `config.py` / `constants.py`.
 
 ## Conventions
 

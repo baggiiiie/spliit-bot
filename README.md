@@ -17,8 +17,8 @@ Telegram bot for managing [Spliit](https://spliit.app) expenses.
    use `/switch` there to pick which Spliit group to manage.
 4. Install and run:
    ```bash
-   pip install -r requirements.txt
-   python bot.py
+   uv sync
+   uv run python bot.py
    ```
 
 ## Deploy with [ONCE](https://github.com/basecamp/once)

@@ -26,6 +26,7 @@ from cli import (
 from cli import (
     undo_cmd as cli_undo_cmd,
 )
+from constants import PendingDelete, PendingSettlement
 from parsing import ParsedExpense, parse_add_command, parse_with_llm
 
 PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
@@ -153,7 +154,9 @@ class TestParseWithLLM:
             pytest.skip("GROQ_API_KEY is not set")
 
     def test_simple_expense(self):
-        result, _ = parse_with_llm("dinner cost 100 split between baggie and neo", PARTICIPANTS)
+        result, _ = asyncio.run(
+            parse_with_llm("dinner cost 100 split between baggie and neo", PARTICIPANTS)
+        )
         assert isinstance(result, ParsedExpense)
         assert result.amount == 100.0
         assert result.participants is not None
@@ -161,14 +164,14 @@ class TestParseWithLLM:
         assert "neo" in result.participants
 
     def test_all_participants(self):
-        result, _ = parse_with_llm("lunch 50 everyone splits", PARTICIPANTS)
+        result, _ = asyncio.run(parse_with_llm("lunch 50 everyone splits", PARTICIPANTS))
         assert isinstance(result, ParsedExpense)
         assert result.amount == 50.0
         assert result.participants is not None
         assert len(result.participants) == 4
 
     def test_nonsense_returns_error(self):
-        result, _ = parse_with_llm("hello how are you", PARTICIPANTS)
+        result, _ = asyncio.run(parse_with_llm("hello how are you", PARTICIPANTS))
         assert result is None or isinstance(result, str)
 
 
@@ -314,10 +317,10 @@ class TestIsAllowedChat:
 
 
 class TestLatestCmd:
-    @patch("handlers.id_to_name_map", return_value=({}, "$"))
-    @patch("handlers.get_activities", return_value=FAKE_ACTIVITIES)
-    @patch("handlers.is_allowed_chat", return_value=True)
-    @patch("handlers.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("handlers.commands.id_to_name_map", return_value=({}, "$"))
+    @patch("handlers.commands.get_activities", return_value=FAKE_ACTIVITIES)
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
+    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_shows_latest_activities(self, mock_resolve, mock_allowed, mock_get, mock_idname):
         from handlers import latest_cmd
 
@@ -335,10 +338,10 @@ class TestLatestCmd:
         assert "Updated group" in text
         assert call_kwargs.kwargs.get("parse_mode") == "HTML"
 
-    @patch("handlers.id_to_name_map", return_value=({}, "$"))
-    @patch("handlers.get_activities", return_value=[])
-    @patch("handlers.is_allowed_chat", return_value=True)
-    @patch("handlers.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("handlers.commands.id_to_name_map", return_value=({}, "$"))
+    @patch("handlers.commands.get_activities", return_value=[])
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
+    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_no_expenses(self, mock_resolve, mock_allowed, mock_get, mock_idname):
         from handlers import latest_cmd
 
@@ -352,8 +355,8 @@ class TestLatestCmd:
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
         assert text == "No activity found."
 
-    @patch("handlers.is_allowed_chat", return_value=True)
-    @patch("handlers.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
+    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_invalid_count(self, mock_resolve, mock_allowed):
         from handlers import latest_cmd
 
@@ -366,7 +369,7 @@ class TestLatestCmd:
         text = update.message.reply_text.call_args.args[0]
         assert text == "Count must be a positive integer."
 
-    @patch("handlers.is_allowed_chat", return_value=False)
+    @patch("handlers.commands.is_allowed_chat", return_value=False)
     def test_disallowed_chat(self, mock_allowed):
         from handlers import latest_cmd
 
@@ -378,9 +381,9 @@ class TestLatestCmd:
 
 
 class TestUndoCmd:
-    @patch("handlers.get_activities", return_value=FAKE_ACTIVITIES)
-    @patch("handlers.is_allowed_chat", return_value=True)
-    @patch("handlers.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("handlers.commands.get_activities", return_value=FAKE_ACTIVITIES)
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
+    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_shows_latest_activity(self, mock_resolve, mock_allowed, mock_get):
         from handlers import undo_cmd
 
@@ -395,9 +398,9 @@ class TestUndoCmd:
         assert "Dinner" in text
         assert "Undo activity #1?" in text
 
-    @patch("handlers.get_activities", return_value=[])
-    @patch("handlers.is_allowed_chat", return_value=True)
-    @patch("handlers.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("handlers.commands.get_activities", return_value=[])
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
+    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_no_expenses(self, mock_resolve, mock_allowed, mock_get):
         from handlers import undo_cmd
 
@@ -411,9 +414,9 @@ class TestUndoCmd:
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
         assert text == "No activity found."
 
-    @patch("handlers.get_activities", return_value=FAKE_ACTIVITIES[:2])
-    @patch("handlers.is_allowed_chat", return_value=True)
-    @patch("handlers.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("handlers.commands.get_activities", return_value=FAKE_ACTIVITIES[:2])
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
+    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_non_undoable_activity(self, mock_resolve, mock_allowed, mock_get):
         from handlers import undo_cmd
 
@@ -426,7 +429,7 @@ class TestUndoCmd:
         text = update.message.reply_text.call_args.args[0]
         assert text == "This activity can't be undone. Only newly created expenses can be undone."
 
-    @patch("handlers.is_allowed_chat", return_value=False)
+    @patch("handlers.commands.is_allowed_chat", return_value=False)
     def test_disallowed_chat(self, mock_allowed):
         from handlers import undo_cmd
 
@@ -439,8 +442,11 @@ class TestUndoCmd:
 
 
 class TestUndoButton:
-    @patch("handlers.delete_expense")
-    @patch("handlers.pending_deletes", {"42_999": ("exp-123", "test-group-id")})
+    @patch("handlers.callbacks.delete_expense")
+    @patch(
+        "handlers.callbacks.pending_deletes",
+        {"42_999": PendingDelete(expense_id="exp-123", group_id="test-group-id")},
+    )
     def test_confirm_delete(self, mock_delete):
         from handlers import button
 
@@ -454,7 +460,10 @@ class TestUndoButton:
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
         assert text == "Deleted."
 
-    @patch("handlers.pending_deletes", {"42_999": ("exp-123", "test-group-id")})
+    @patch(
+        "handlers.callbacks.pending_deletes",
+        {"42_999": PendingDelete(expense_id="exp-123", group_id="test-group-id")},
+    )
     def test_cancel_delete(self):
         from handlers import button
 
@@ -467,7 +476,7 @@ class TestUndoButton:
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
         assert text == "Cancelled."
 
-    @patch("handlers.pending_deletes", {})
+    @patch("handlers.callbacks.pending_deletes", {})
     def test_expired_delete(self):
         from handlers import button
 
@@ -483,12 +492,12 @@ class TestUndoButton:
 
 class TestSettleCmd:
     @patch(
-        "handlers.id_to_name_map",
+        "handlers.commands.id_to_name_map",
         return_value=({"pid-1": "Baggie", "pid-2": "Neo", "pid-3": "Yoga"}, "$"),
     )
-    @patch("handlers.get_balances", return_value=FAKE_BALANCES)
-    @patch("handlers.is_allowed_chat", return_value=True)
-    @patch("handlers.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("handlers.commands.get_balances", return_value=FAKE_BALANCES)
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
+    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_shows_suggested_reimbursements(
         self, mock_resolve, mock_allowed, mock_get, mock_idname
     ):
@@ -509,10 +518,10 @@ class TestSettleCmd:
         assert markup.inline_keyboard[0][0].callback_data == "settle_42_999_0"
         assert markup.inline_keyboard[-1][0].callback_data == "settleno_42_999"
 
-    @patch("handlers.get_balances", return_value={"balances": {}, "reimbursements": []})
-    @patch("handlers.id_to_name_map", return_value=({}, "$"))
-    @patch("handlers.is_allowed_chat", return_value=True)
-    @patch("handlers.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("handlers.commands.get_balances", return_value={"balances": {}, "reimbursements": []})
+    @patch("handlers.commands.id_to_name_map", return_value=({}, "$"))
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
+    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_no_reimbursements(self, mock_resolve, mock_allowed, mock_idname, mock_get):
         from handlers import settle_cmd
 
@@ -528,14 +537,18 @@ class TestSettleCmd:
 
 class TestSettleButton:
     @patch(
-        "handlers.id_to_name_map",
+        "handlers.callbacks.id_to_name_map",
         return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"),
     )
-    @patch("handlers.settle_reimbursement")
-    @patch("handlers.get_spliit", return_value=MagicMock())
+    @patch("handlers.callbacks.settle_reimbursement")
+    @patch("handlers.callbacks.get_spliit", return_value=MagicMock())
     @patch(
-        "handlers.pending_settlements",
-        {"42_999_0": ("pid-1", "pid-2", 1250, "test-group-id")},
+        "handlers.callbacks.pending_settlements",
+        {
+            "42_999_0": PendingSettlement(
+                from_id="pid-1", to_id="pid-2", amount=1250, group_id="test-group-id"
+            )
+        },
     )
     def test_marks_reimbursement_paid(self, mock_get_spliit, mock_settle, mock_idname):
         from handlers import button
@@ -551,7 +564,7 @@ class TestSettleButton:
         text = call_kwargs.args[0] if call_kwargs.args else call_kwargs.kwargs.get("text", "")
         assert text == "Marked as paid: Baggie -> Neo ($12.50)"
 
-    @patch("handlers.pending_settlements", {})
+    @patch("handlers.callbacks.pending_settlements", {})
     def test_expired_settlement(self):
         from handlers import button
 
@@ -565,10 +578,14 @@ class TestSettleButton:
         assert text == "Expired. Try again."
 
     @patch(
-        "handlers.pending_settlements",
+        "handlers.callbacks.pending_settlements",
         {
-            "42_999_0": ("pid-1", "pid-2", 1250, "group-a"),
-            "42_999_1": ("pid-3", "pid-2", 2500, "group-a"),
+            "42_999_0": PendingSettlement(
+                from_id="pid-1", to_id="pid-2", amount=1250, group_id="group-a"
+            ),
+            "42_999_1": PendingSettlement(
+                from_id="pid-3", to_id="pid-2", amount=2500, group_id="group-a"
+            ),
         },
     )
     def test_cancel_settlement(self):
@@ -585,9 +602,10 @@ class TestSettleButton:
 
 
 class TestGroupSelection:
-    @patch("handlers.get_spliit")
+    @patch("handlers.add_flow.get_spliit")
     def test_select_group_resumes_add_flow(self, mock_get_spliit):
-        from handlers import PAYER, interactive_select_group
+        from constants import PAYER
+        from handlers import interactive_select_group
 
         client = MagicMock()
         client.get_group.return_value = {"name": "Trip"}
@@ -615,7 +633,7 @@ class TestGroupSelection:
         assert "Who paid?" in update.callback_query.message.reply_text.call_args.args[0]
         assert ctx.user_data["active_group"] == "test-group"
 
-    @patch("handlers.is_allowed_chat", return_value=True)
+    @patch("handlers.commands.is_allowed_chat", return_value=True)
     def test_switch_cmd_requires_dm(self, mock_allowed):
         from handlers import switch_cmd
 
