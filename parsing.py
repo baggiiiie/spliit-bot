@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -17,6 +18,8 @@ _FORMAT_HINT = "Please use the format:\n`/add $title, $amount, with p1, p2, and 
 _REJECTED_MSG = f"Your request has been rejected. {_FORMAT_HINT}"
 _NOT_UNDERSTOOD_MSG = f"Could not understand the expense. {_FORMAT_HINT}"
 _LLM_ERROR_MSG = "Error with LLM. Please try again later."
+_MAX_LLM_ATTEMPTS = 3
+_RATE_LIMIT_DELAY_RE = re.compile(r"try again in ([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
 
 
 @dataclass
@@ -70,26 +73,45 @@ async def parse_with_llm(
             return _LLM_ERROR_MSG, None
 
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{GROQ_API_BASE_URL.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-                json={
-                    "model": GROQ_MODEL,
-                    "temperature": 0,
-                    "response_format": {"type": "json_object"},
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a JSON-only assistant. Always respond with a single "
-                                "JSON object and nothing else."
-                            ),
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                },
-            )
+            resp = None
+            for attempt in range(1, _MAX_LLM_ATTEMPTS + 1):
+                resp = await client.post(
+                    f"{GROQ_API_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                    json={
+                        "model": GROQ_MODEL,
+                        "temperature": 0,
+                        "max_tokens": 120,
+                        "response_format": {"type": "json_object"},
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a JSON-only assistant. Always respond with a single "
+                                    "JSON object and nothing else."
+                                ),
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                    },
+                )
+                if resp.status_code != 429:
+                    break
+                raw_response = resp.text
+                if attempt >= _MAX_LLM_ATTEMPTS:
+                    break
+                delay_match = _RATE_LIMIT_DELAY_RE.search(resp.text)
+                delay_seconds = float(delay_match.group(1)) if delay_match else 1.0
+                delay_seconds = min(max(delay_seconds, 0.5), 5.0)
+                logger.warning(
+                    "Groq rate limited on attempt %s/%s; retrying in %.2fs",
+                    attempt,
+                    _MAX_LLM_ATTEMPTS,
+                    delay_seconds,
+                )
+                await asyncio.sleep(delay_seconds)
 
+        assert resp is not None
         if resp.status_code >= 400:
             logger.error(f"Groq API error: {resp.status_code} {resp.text}")
             return _LLM_ERROR_MSG, resp.text

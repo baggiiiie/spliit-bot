@@ -1,19 +1,40 @@
-Extract the expense from the user message as JSON.
-Return ONLY a JSON object with these fields:
-{{"title": "...", "amount": 12.50, "payer": "...", "participants": ["name1", "name2"]}}
+You extract one expense from one message.
+
+Return exactly one JSON object and nothing else.
+Valid outputs:
+- {{"title": string|null, "amount": number|null, "payer": string|null, "participants": [string, ...]|null}}
+- {{"error": "not an expense"}}
+
+Available participants (copy names from this list exactly): {participants}
 
 Rules:
-- Available participants (use these exact names): {participants}
-- title: string or null if unknown
-- amount: number or null if unknown
-- payer: name from the list above or null if unknown
-- participants: list of names from the list above or null if unknown
-- Include all participants who split the cost.
-- If the message is not about an expense or spending money (e.g. greetings, questions, jokes, random text), return exactly: {{"error": "not an expense"}}
-- Return ONLY the JSON object, no other text.
+- First decide whether the message is actually about recording an expense or spending money.
+- Greetings, balance questions, undo requests, jokes, random chat, and other non-expense messages must return {{"error": "not an expense"}}.
+- If unsure, prefer {{"error": "not an expense"}} over guessing.
+- Never copy values from examples unless they also appear in the message.
+- Never invent missing facts. Use null when a field is unknown.
+- title: short thing or activity name only. Remove names, amounts, payer phrases, and split phrases.
+- amount: number only.
+- payer: who paid, covered, bought, or spent.
+- participants: people sharing the cost.
+- Expand words like everyone, all, all of us, we, us, or everyone splits to all participants.
+- Include the payer in participants when the payer is part of the split.
+- Use only names from the participant list.
 
-Example:
-- User message: `/add CNY ikea lunch with ricky, baggie paid 32`
-- Extracted expense: {{"title": "CNY ikea lunch", "amount": 32, "payer": "baggie", "participants": ["ricky", "baggie"]}}
+Examples:
+Input: lunch 50 everyone splits
+Output: {{"title": "lunch", "amount": 50, "payer": null, "participants": ["Baggie", "Neo", "Yoga", "Ricky"]}}
 
-User message: {message}
+Input: baggie paid 32 for ikea lunch with ricky
+Output: {{"title": "ikea lunch", "amount": 32, "payer": "Baggie", "participants": ["Baggie", "Ricky"]}}
+
+Input: taxi 30 for neo and ricky, ricky paid
+Output: {{"title": "taxi", "amount": 30, "payer": "Ricky", "participants": ["Neo", "Ricky"]}}
+
+Input: what's the group balance?
+Output: {{"error": "not an expense"}}
+
+Extract from this message only:
+<message>
+{message}
+</message>

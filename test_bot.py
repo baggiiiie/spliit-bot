@@ -144,6 +144,76 @@ class TestPromptTemplate:
         assert "lunch 50" in result
 
 
+class _FakeLLMResponse:
+    def __init__(self, status_code: int, payload: dict | None = None, text: str = ""):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.text = text
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _FakeAsyncClient:
+    def __init__(self, responses: list[_FakeLLMResponse]):
+        self._responses = responses
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, *args, **kwargs):
+        return self._responses.pop(0)
+
+
+class TestParseWithLLMRetries:
+    def test_rate_limit_retries_then_succeeds(self):
+        import parsing
+
+        responses = [
+            _FakeLLMResponse(
+                429,
+                text=(
+                    '{"error":{"message":"Rate limit reached. '
+                    'Please try again in 1.25s.","code":"rate_limit_exceeded"}}'
+                ),
+            ),
+            _FakeLLMResponse(
+                200,
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"title":"Lunch","amount":12.5,'
+                                    '"payer":"Baggie","participants":["Baggie","Neo"]}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            ),
+        ]
+
+        with (
+            patch.object(parsing, "GROQ_API_KEY", "test-key"),
+            patch.object(parsing.httpx, "AsyncClient", return_value=_FakeAsyncClient(responses)),
+            patch.object(parsing.asyncio, "sleep", new=AsyncMock()) as sleep_mock,
+        ):
+            result, raw = asyncio.run(parse_with_llm("lunch 12.5 split with neo", PARTICIPANTS))
+
+        assert isinstance(result, ParsedExpense)
+        assert result.title == "Lunch"
+        assert result.amount == 12.5
+        assert result.payer == "Baggie"
+        assert result.participants == ["baggie", "neo"]
+        sleep_mock.assert_awaited_once_with(1.25)
+        assert raw is not None
+        assert "Lunch" in raw
+
+
 @pytest.mark.llm
 class TestParseWithLLM:
     @pytest.fixture(autouse=True)
