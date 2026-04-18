@@ -236,6 +236,17 @@ CASES = [
         is_expense=True,
         tool_ready=True,
     ),
+    EvalCase(
+        name="shared_by_without_payer",
+        message="movie 28 shared by neo and yoga",
+        expected=ParsedExpense(
+            title="movie",
+            amount=28.0,
+            payer=None,
+            participants=["neo", "yoga"],
+        ),
+        is_expense=True,
+    ),
     EvalCase(name="greeting", message="hello how are you", expected=None, is_expense=False),
     EvalCase(
         name="balance_question",
