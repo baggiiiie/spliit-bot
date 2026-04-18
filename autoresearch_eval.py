@@ -283,6 +283,24 @@ CASES = [
         is_expense=False,
     ),
     EvalCase(
+        name="did_pay_question",
+        message="did ricky pay 20 already?",
+        expected=None,
+        is_expense=False,
+    ),
+    EvalCase(
+        name="settle_request_not_add",
+        message="settle 20 from neo to baggie",
+        expected=None,
+        is_expense=False,
+    ),
+    EvalCase(
+        name="amount_choice_question",
+        message="is yoga paying 30 or 40 for dinner?",
+        expected=None,
+        is_expense=False,
+    ),
+    EvalCase(
         name="undo_command",
         message="undo the last expense",
         expected=None,

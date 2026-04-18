@@ -1,0 +1,2 @@
+- Add a second benchmark dimension for tool/command decision quality, not just extraction: distinguish expense creation from non-expense intents like balance questions, undo requests, settlement requests, and general chat even when messages contain numbers or participant names.
+- If real traffic suggests it later, expand participant normalization beyond the already-covered `+` and `/` separators to repeated names or messy punctuation variants.

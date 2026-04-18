@@ -1,7 +1,7 @@
 # Autoresearch: improve LLM expense extraction reliability
 
 ## Objective
-Increase the success rate of turning natural-language `/add` messages into correct structured expense data for the bot. The target workload is the live Groq-backed `parse_with_llm()` path used when regex parsing fails. Optimizations should improve extraction quality for real user phrasings, especially cases that are complete enough for the bot to proceed directly to confirmation without extra interactive questions.
+Increase the success rate of turning natural-language `/add` messages into correct structured expense data for the bot. The target workload is the live Groq-backed `parse_with_llm()` path used when regex parsing fails. Optimizations should improve both extraction quality for real user phrasings and intent disambiguation, so non-expense requests containing names or amounts do not get turned into accidental expenses.
 
 ## Metrics
 - **Primary**: `pass_rate` (%, higher is better) — exact-case success rate on the prompt evaluation suite
@@ -39,3 +39,7 @@ Increase the success rate of turning natural-language `/add` messages into corre
 - To avoid overfitting, the next workload broadens the eval suite with more natural phrasings: `split among`, explicit `everyone` with payer, `only X splitting`, `+` participant separators, a money-related non-expense question, and a tricky single-participant/no-payer case (`add coffee beans 14 for baggie only`) that currently tempts payer hallucination.
 - Fresh unseen probing after that improvement found another realistic gap: phrases like `movie 28 shared by neo and yoga` can cause the model to invent a payer even though only participants are named. That pattern should be treated like other partial/no-payer expenses.
 - Follow-up probing also produced additional realistic no-payer phrasings that should stay green if the fix is real: `snacks 12 among neo and yoga` and `karaoke 25 for neo/yoga/ricky`.
+- A prompt-only fix for `shared by` was a dead end; exact metric stayed flat.
+- The winning follow-up was in `parsing.py`: if the LLM returns a payer but the source text has no explicit payer verb (`paid`, `covered`, `bought`, `spent`, `fronted`, etc.), clear the payer instead of trusting the model. This generalized across `for X only`, `shared by`, `among`, and slash-separated participant phrases.
+- Current broader live suite is 25 cases and back at 100% exact match with zero false positives.
+- Fresh probing found a new frontier that is meaningfully different from phrasing variants: intent disambiguation when messages contain names and numbers but are really questions or other commands (`settle 20 from neo to baggie`, `did ricky pay 20 already?`, `is yoga paying 30 or 40 for dinner?`). Those should not become expenses.
