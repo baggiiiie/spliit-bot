@@ -20,6 +20,10 @@ _NOT_UNDERSTOOD_MSG = f"Could not understand the expense. {_FORMAT_HINT}"
 _LLM_ERROR_MSG = "Error with LLM. Please try again later."
 _MAX_LLM_ATTEMPTS = 3
 _RATE_LIMIT_DELAY_RE = re.compile(r"try again in ([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
+_PAYER_SIGNAL_RE = re.compile(
+    r"\b(paid|paying|covered|covering|bought|buying|spent|spending|fronted|fronting)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -28,6 +32,10 @@ class ParsedExpense:
     amount: float | None = None
     payer: str | None = None
     participants: list[str] | None = None
+
+
+def _has_explicit_payer_signal(text: str) -> bool:
+    return bool(_PAYER_SIGNAL_RE.search(text))
 
 
 def parse_add_command(
@@ -138,6 +146,8 @@ async def parse_with_llm(
             if isinstance(payer, str) and payer.lower() in known_lower
             else None
         )
+        if matched_payer and not _has_explicit_payer_signal(text):
+            matched_payer = None
         matched_payees = (
             [known_lower[p.lower()].lower() for p in participants if p.lower() in known_lower]
             if isinstance(participants, list) and participants

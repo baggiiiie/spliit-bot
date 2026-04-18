@@ -202,7 +202,9 @@ class TestParseWithLLMRetries:
             patch.object(parsing.httpx, "AsyncClient", return_value=_FakeAsyncClient(responses)),
             patch.object(parsing.asyncio, "sleep", new=AsyncMock()) as sleep_mock,
         ):
-            result, raw = asyncio.run(parse_with_llm("lunch 12.5 split with neo", PARTICIPANTS))
+            result, raw = asyncio.run(
+                parse_with_llm("baggie paid lunch 12.5 split with neo", PARTICIPANTS)
+            )
 
         assert isinstance(result, ParsedExpense)
         assert result.title == "Lunch"
@@ -212,6 +214,70 @@ class TestParseWithLLMRetries:
         sleep_mock.assert_awaited_once_with(1.25)
         assert raw is not None
         assert "Lunch" in raw
+
+    def test_clears_inferred_payer_without_explicit_payer_signal(self):
+        import parsing
+
+        responses = [
+            _FakeLLMResponse(
+                200,
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"title":"movie","amount":28,'
+                                    '"payer":"Neo","participants":["Neo","Yoga"]}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+        ]
+
+        with (
+            patch.object(parsing, "GROQ_API_KEY", "test-key"),
+            patch.object(parsing.httpx, "AsyncClient", return_value=_FakeAsyncClient(responses)),
+        ):
+            result, _ = asyncio.run(parse_with_llm("movie 28 shared by neo and yoga", PARTICIPANTS))
+
+        assert isinstance(result, ParsedExpense)
+        assert result.payer is None
+        assert result.participants == ["neo", "yoga"]
+
+    def test_keeps_payer_when_explicit_payer_signal_exists(self):
+        import parsing
+
+        responses = [
+            _FakeLLMResponse(
+                200,
+                payload={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": (
+                                    '{"title":"fries","amount":6.5,'
+                                    '"payer":"Neo","participants":["Neo","Ricky"]}'
+                                )
+                            }
+                        }
+                    ]
+                },
+            )
+        ]
+
+        with (
+            patch.object(parsing, "GROQ_API_KEY", "test-key"),
+            patch.object(parsing.httpx, "AsyncClient", return_value=_FakeAsyncClient(responses)),
+        ):
+            result, _ = asyncio.run(
+                parse_with_llm("neo bought fries 6.5 for neo + ricky", PARTICIPANTS)
+            )
+
+        assert isinstance(result, ParsedExpense)
+        assert result.payer == "Neo"
+        assert result.participants == ["neo", "ricky"]
 
 
 @pytest.mark.llm
