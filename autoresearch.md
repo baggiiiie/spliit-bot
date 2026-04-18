@@ -35,3 +35,5 @@ Increase the success rate of turning natural-language `/add` messages into corre
 ## What's Been Tried
 - Baseline setup created with a live eval harness (`autoresearch_eval.py`) covering complete expenses, partial expenses, and obvious non-expense messages.
 - Initial hypothesis: the current prompt is too underspecified for title cleanup, `everyone`/`all of us` expansion, and payer/participant role separation.
+- A classification-first prompt plus bounded 429 retries in `parse_with_llm()` reached 100% on the initial 16-case suite and passed all checks.
+- To avoid overfitting, the next workload broadens the eval suite with more natural phrasings: `split among`, explicit `everyone` with payer, `only X splitting`, `+` participant separators, a money-related non-expense question, and a tricky single-participant/no-payer case (`add coffee beans 14 for baggie only`) that currently tempts payer hallucination.
