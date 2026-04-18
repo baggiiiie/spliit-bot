@@ -247,6 +247,28 @@ CASES = [
         ),
         is_expense=True,
     ),
+    EvalCase(
+        name="among_without_payer",
+        message="snacks 12 among neo and yoga",
+        expected=ParsedExpense(
+            title="snacks",
+            amount=12.0,
+            payer=None,
+            participants=["neo", "yoga"],
+        ),
+        is_expense=True,
+    ),
+    EvalCase(
+        name="slash_separated_participants",
+        message="karaoke 25 for neo/yoga/ricky",
+        expected=ParsedExpense(
+            title="karaoke",
+            amount=25.0,
+            payer=None,
+            participants=["neo", "yoga", "ricky"],
+        ),
+        is_expense=True,
+    ),
     EvalCase(name="greeting", message="hello how are you", expected=None, is_expense=False),
     EvalCase(
         name="balance_question",
