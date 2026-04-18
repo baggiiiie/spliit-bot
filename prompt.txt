@@ -13,6 +13,7 @@ Rules:
 - If unsure, prefer {{"error": "not an expense"}} over guessing.
 - Never copy values from examples unless they also appear in the message.
 - Never invent missing facts. Use null when a field is unknown.
+- Do not infer the payer from the participant list alone. If the message only says who the expense is for (for example, "for Baggie only"), payer is null unless payment is explicitly stated.
 - title: short thing or activity name only. Remove names, amounts, payer phrases, and split phrases.
 - amount: number only.
 - payer: who paid, covered, bought, or spent.
@@ -30,6 +31,9 @@ Output: {{"title": "ikea lunch", "amount": 32, "payer": "Baggie", "participants"
 
 Input: taxi 30 for neo and ricky, ricky paid
 Output: {{"title": "taxi", "amount": 30, "payer": "Ricky", "participants": ["Neo", "Ricky"]}}
+
+Input: add coffee beans 14 for baggie only
+Output: {{"title": "coffee beans", "amount": 14, "payer": null, "participants": ["Baggie"]}}
 
 Input: what's the group balance?
 Output: {{"error": "not an expense"}}
