@@ -394,9 +394,19 @@ async def voice_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     group_id, client = resolved
+    try:
+        participant_names = list(client.get_participants().keys())
+    except Exception as e:
+        await update.message.reply_text(
+            f"Error: {e}",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
     voice_file = await update.message.voice.get_file()
     voice_bytes = await voice_file.download_as_bytearray()
-    transcript = await transcribe_voice(bytes(voice_bytes))
+    prompt = "Participants: " + ", ".join(participant_names) + "."
+    transcript = await transcribe_voice(bytes(voice_bytes), prompt=prompt)
     if not transcript:
         await update.message.reply_text(
             "Couldn't understand the voice message. Please type the expense instead.",
@@ -405,6 +415,10 @@ async def voice_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     logger.info("Voice transcribed: %s", transcript)
+    await update.message.reply_text(
+        f"Transcribed voice message: {transcript}",
+        reply_to_message_id=update.message.message_id,
+    )
     await _continue_add_flow(
         update.message,
         context,

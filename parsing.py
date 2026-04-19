@@ -66,17 +66,22 @@ def parse_add_command(
     return ParsedExpense(title=title, amount=amount, participants=[n.lower() for n in matched])
 
 
-async def transcribe_voice(file_bytes: bytes, filename: str = "voice.ogg") -> str | None:
+async def transcribe_voice(
+    file_bytes: bytes, filename: str = "voice.ogg", prompt: str | None = None
+) -> str | None:
     if not GROQ_API_KEY:
         logger.error("GROQ_API_KEY is not set")
         return None
     try:
+        data: dict[str, str] = {"model": GROQ_WHISPER_MODEL, "response_format": "json"}
+        if prompt:
+            data["prompt"] = prompt
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{GROQ_API_BASE_URL.rstrip('/')}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
                 files={"file": (filename, file_bytes, "audio/ogg")},
-                data={"model": GROQ_WHISPER_MODEL, "response_format": "json"},
+                data=data,
             )
         if resp.status_code >= 400:
             logger.error("Whisper API error: %s %s", resp.status_code, resp.text)
