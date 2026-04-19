@@ -8,6 +8,7 @@ from .add_flow import (
     interactive_payer,
     interactive_select_group,
     interactive_title,
+    voice_add_cmd,
 )
 from .callbacks import button
 from .commands import (
@@ -38,4 +39,5 @@ __all__ = [
     "start",
     "switch_cmd",
     "undo_cmd",
+    "voice_add_cmd",
 ]

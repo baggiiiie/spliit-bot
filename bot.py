@@ -52,6 +52,7 @@ from handlers import (
     start,
     switch_cmd,
     undo_cmd,
+    voice_add_cmd,
 )
 from health_http import start_background_health_server
 
@@ -121,6 +122,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel_interactive)],
     )
     app.add_handler(add_conv_handler)
+    app.add_handler(MessageHandler(filters.VOICE, voice_add_cmd))
     app.add_handler(CallbackQueryHandler(button))
 
     if BOT_MODE == "webhook":

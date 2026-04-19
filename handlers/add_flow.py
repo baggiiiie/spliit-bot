@@ -34,7 +34,7 @@ from helpers import (
     participant_keyboard,
     tg_display_name,
 )
-from parsing import parse_add_command, parse_with_llm
+from parsing import parse_add_command, parse_with_llm, transcribe_voice
 
 from .common import (
     FORMAT_HELP,
@@ -368,6 +368,52 @@ async def cancel_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_to_message_id=update.message.message_id,
     )
     return ConversationHandler.END
+
+
+async def voice_add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.voice or not update.effective_user:
+        return
+    if not is_allowed_chat(update):
+        return
+
+    reply = update.message.reply_to_message
+    if not reply or not reply.from_user or not reply.from_user.is_bot:
+        return
+    if reply.from_user.id != (await context.bot.get_me()).id:
+        return
+
+    assert context.user_data is not None
+    _reset_add_state(context.user_data)
+
+    resolved = resolve_group(update, context.user_data)
+    if not resolved:
+        await update.message.reply_text(
+            NO_GROUP_MSG if not is_dm(update) else "No group selected. Use /switch to pick one.",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    group_id, client = resolved
+    voice_file = await update.message.voice.get_file()
+    voice_bytes = await voice_file.download_as_bytearray()
+    transcript = await transcribe_voice(bytes(voice_bytes))
+    if not transcript:
+        await update.message.reply_text(
+            "Couldn't understand the voice message. Please type the expense instead.",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    logger.info("Voice transcribed: %s", transcript)
+    await _continue_add_flow(
+        update.message,
+        context,
+        update.effective_user.id,
+        tg_display_name(update),
+        group_id,
+        client,
+        transcript,
+    )
 
 
 async def interactive_select_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
