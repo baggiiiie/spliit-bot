@@ -7,6 +7,8 @@ from .add_flow import (
     interactive_payees,
     interactive_payer,
     interactive_select_group,
+    interactive_split_mode,
+    interactive_split_values,
     interactive_title,
     voice_add_cmd,
 )
@@ -32,6 +34,8 @@ __all__ = [
     "interactive_payees",
     "interactive_payer",
     "interactive_select_group",
+    "interactive_split_mode",
+    "interactive_split_values",
     "interactive_title",
     "latest_cmd",
     "resolve_group",

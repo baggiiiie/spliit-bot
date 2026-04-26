@@ -26,7 +26,8 @@ from cli import (
 from cli import (
     undo_cmd as cli_undo_cmd,
 )
-from constants import PendingDelete, PendingSettlement
+from constants import PendingDelete, PendingSettlement, SplitMode
+from helpers import parse_split_values
 from parsing import ParsedExpense, parse_add_command, parse_with_llm
 
 PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
@@ -1086,3 +1087,131 @@ class TestHealthHttp:
         finally:
             server.shutdown()
             server.server_close()
+
+
+SPLIT_PIDS = ["a", "b", "c"]
+SPLIT_NAMES = ["Alice", "Bob", "Carol"]
+
+
+class TestParseSplitValues:
+    def test_shares_ok(self):
+        paid_for, err = parse_split_values(
+            "2 1 1", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_SHARES, amount_cents=4000
+        )
+        assert err is None
+        assert paid_for == [("a", 2), ("b", 1), ("c", 1)]
+
+    def test_shares_comma_separated(self):
+        paid_for, err = parse_split_values(
+            "2, 1, 1", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_SHARES, amount_cents=4000
+        )
+        assert err is None
+        assert paid_for == [("a", 2), ("b", 1), ("c", 1)]
+
+    def test_shares_wrong_count(self):
+        paid_for, err = parse_split_values(
+            "2 1", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_SHARES, amount_cents=4000
+        )
+        assert paid_for == []
+        assert err is not None and "Expected 3" in err
+
+    def test_shares_non_integer(self):
+        _, err = parse_split_values(
+            "2 1.5 1", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_SHARES, amount_cents=4000
+        )
+        assert err is not None and "not a whole number" in err
+
+    def test_shares_zero_rejected(self):
+        _, err = parse_split_values(
+            "2 0 1", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_SHARES, amount_cents=4000
+        )
+        assert err is not None and "positive" in err
+
+    def test_percentage_ok(self):
+        paid_for, err = parse_split_values(
+            "50 30 20", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_PERCENTAGE, amount_cents=10000
+        )
+        assert err is None
+        assert paid_for == [("a", 5000), ("b", 3000), ("c", 2000)]
+
+    def test_percentage_must_sum_to_100(self):
+        _, err = parse_split_values(
+            "50 30 30", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_PERCENTAGE, amount_cents=10000
+        )
+        assert err is not None and "sum to 100" in err
+
+    def test_amount_ok(self):
+        paid_for, err = parse_split_values(
+            "20 15 5", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_AMOUNT, amount_cents=4000
+        )
+        assert err is None
+        assert paid_for == [("a", 2000), ("b", 1500), ("c", 500)]
+
+    def test_amount_must_match_total(self):
+        _, err = parse_split_values(
+            "20 15 4", SPLIT_PIDS, SPLIT_NAMES, SplitMode.BY_AMOUNT, amount_cents=4000
+        )
+        assert err is not None and "sum to 40.00" in err
+
+
+class TestCreateExpenseSplitMode:
+    @patch("services._trpc_post")
+    def test_evenly_default(self, mock_post):
+        from services import create_expense
+
+        create_expense(
+            group_id="g",
+            title="t",
+            paid_by="p1",
+            paid_for=[("p1", 1), ("p2", 1)],
+            amount=4000,
+        )
+        payload = mock_post.call_args.args[1]
+        assert payload["expenseFormValues"]["splitMode"] == "EVENLY"
+
+    @patch("services._trpc_post")
+    def test_by_shares(self, mock_post):
+        from services import create_expense
+
+        create_expense(
+            group_id="g",
+            title="t",
+            paid_by="p1",
+            paid_for=[("p1", 2), ("p2", 1)],
+            amount=4000,
+            split_mode=SplitMode.BY_SHARES,
+        )
+        payload = mock_post.call_args.args[1]
+        assert payload["expenseFormValues"]["splitMode"] == "BY_SHARES"
+        assert payload["expenseFormValues"]["paidFor"] == [
+            {"participant": "p1", "shares": 2},
+            {"participant": "p2", "shares": 1},
+        ]
+
+    @patch("services._trpc_post")
+    def test_by_percentage(self, mock_post):
+        from services import create_expense
+
+        create_expense(
+            group_id="g",
+            title="t",
+            paid_by="p1",
+            paid_for=[("p1", 5000), ("p2", 5000)],
+            amount=4000,
+            split_mode=SplitMode.BY_PERCENTAGE,
+        )
+        assert mock_post.call_args.args[1]["expenseFormValues"]["splitMode"] == "BY_PERCENTAGE"
+
+    @patch("services._trpc_post")
+    def test_by_amount(self, mock_post):
+        from services import create_expense
+
+        create_expense(
+            group_id="g",
+            title="t",
+            paid_by="p1",
+            paid_for=[("p1", 2500), ("p2", 1500)],
+            amount=4000,
+            split_mode=SplitMode.BY_AMOUNT,
+        )
+        assert mock_post.call_args.args[1]["expenseFormValues"]["splitMode"] == "BY_AMOUNT"

@@ -7,7 +7,7 @@ import re
 from typing import cast
 
 from spliit import Spliit
-from telegram import ForceReply, Message, Update
+from telegram import CallbackQuery, ForceReply, Message, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from config import (
@@ -21,17 +21,23 @@ from constants import (
     CB_PAYEE_DONE,
     CB_PAYER,
     CB_SELECT_GROUP,
+    CB_SPLIT_MODE,
     PAYEES,
     PAYER,
     SELECT_GROUP,
+    SPLIT_MODE,
+    SPLIT_VALUES,
     TITLE,
+    SplitMode,
 )
-from domain import group_picker_options
+from domain import group_picker_options, id_to_name_map
 from helpers import (
     group_picker_keyboard,
     is_allowed_chat,
     is_dm,
+    parse_split_values,
     participant_keyboard,
+    split_mode_keyboard,
     tg_display_name,
 )
 from parsing import parse_add_command, parse_with_llm, transcribe_voice
@@ -47,6 +53,23 @@ from .common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_SPLIT_MODE_PROMPT = "How do you want to split it?"
+
+
+async def _prompt_split_mode_new_message(message: Message) -> int:
+    await message.reply_text(
+        _SPLIT_MODE_PROMPT,
+        reply_markup=split_mode_keyboard(),
+        reply_to_message_id=message.message_id,
+    )
+    return SPLIT_MODE
+
+
+async def _prompt_split_mode_edit(query: CallbackQuery) -> int:
+    await query.edit_message_text(_SPLIT_MODE_PROMPT, reply_markup=split_mode_keyboard())
+    return SPLIT_MODE
 
 
 async def _continue_add_flow(
@@ -179,17 +202,7 @@ async def _continue_add_flow(
         )
         return PAYEES
 
-    confirmation_text, markup = _store_pending_expense(
-        context.user_data,
-        user_id,
-        message.message_id,
-        tg_name,
-        context.user_data["selected_payees"],
-        group_id,
-    )
-    _reset_add_state(context.user_data)
-    await message.reply_text(confirmation_text, parse_mode="Markdown", reply_markup=markup)
-    return ConversationHandler.END
+    return await _prompt_split_mode_new_message(message)
 
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
@@ -289,20 +302,7 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     pre_selected = context.user_data.get("selected_payees", [])
     if pre_selected:
-        assert query.message and update.effective_user
-        resolved = resolve_group(update, context.user_data)
-        assert resolved
-        group_id, _client = resolved
-        text, markup = _store_pending_expense(
-            context.user_data,
-            update.effective_user.id,
-            query.message.message_id,
-            tg_display_name(update),
-            pre_selected,
-            group_id,
-        )
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
-        return ConversationHandler.END
+        return await _prompt_split_mode_edit(query)
 
     context.user_data["selected_payees"] = []
     await query.edit_message_text(
@@ -326,20 +326,7 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.answer("Select at least one person", show_alert=True)
             return PAYEES
 
-        assert query.message
-        resolved = resolve_group(update, context.user_data)
-        assert resolved
-        group_id, _client = resolved
-        text, markup = _store_pending_expense(
-            context.user_data,
-            update.effective_user.id,
-            query.message.message_id,
-            tg_display_name(update),
-            selected,
-            group_id,
-        )
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
-        return ConversationHandler.END
+        return await _prompt_split_mode_edit(query)
 
     payee_id = data[len(CB_PAYEE) :]
     participants_map = context.user_data["participants_map"]
@@ -359,6 +346,144 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ),
     )
     return PAYEES
+
+
+async def interactive_split_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    assert query and query.data and update.effective_user and context.user_data is not None
+    await query.answer()
+
+    raw = query.data[len(CB_SPLIT_MODE) :]
+    try:
+        split_mode = SplitMode(raw)
+    except ValueError:
+        return SPLIT_MODE
+
+    selected: list[str] = context.user_data.get("selected_payees", [])
+    participants_map: dict[str, str] = context.user_data["participants_map"]
+    reverse = {pid: name for name, pid in participants_map.items()}
+    payee_names = [reverse[pid] for pid in selected]
+
+    if split_mode is SplitMode.EVENLY:
+        return await _finalize_pending_via_callback(update, context, split_mode, paid_for=None)
+
+    context.user_data["split_mode"] = split_mode.value
+    amount = context.user_data["expense_amount"]
+    example = {
+        SplitMode.BY_SHARES: "e.g. 2 1 1",
+        SplitMode.BY_PERCENTAGE: "e.g. 50 30 20",
+        SplitMode.BY_AMOUNT: f"e.g. amounts that sum to {amount:.2f}",
+    }[split_mode]
+    label = {
+        SplitMode.BY_SHARES: "shares",
+        SplitMode.BY_PERCENTAGE: "percentages (must sum to 100)",
+        SplitMode.BY_AMOUNT: f"amounts (must sum to {amount:.2f})",
+    }[split_mode]
+    prompt = f"Enter {label} for each payee in order:\n{', '.join(payee_names)}\n{example}"
+    await query.edit_message_text(prompt)
+    assert query.message
+    message = cast(Message, query.message)
+    await message.reply_text(
+        "Reply with the values:",
+        reply_markup=ForceReply(selective=True),
+        reply_to_message_id=message.message_id,
+    )
+    return SPLIT_VALUES
+
+
+async def interactive_split_values(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert (
+        update.message
+        and update.message.text
+        and update.effective_user
+        and context.user_data is not None
+    )
+
+    raw_mode = context.user_data.get("split_mode")
+    if not raw_mode:
+        return ConversationHandler.END
+    split_mode = SplitMode(raw_mode)
+
+    selected: list[str] = context.user_data.get("selected_payees", [])
+    participants_map: dict[str, str] = context.user_data["participants_map"]
+    reverse = {pid: name for name, pid in participants_map.items()}
+    payee_names = [reverse[pid] for pid in selected]
+    amount_cents = int(context.user_data["expense_amount"] * 100)
+
+    paid_for, error = parse_split_values(
+        update.message.text.strip(), selected, payee_names, split_mode, amount_cents
+    )
+    if error:
+        await update.message.reply_text(
+            f"{error}\nTry again:",
+            reply_markup=ForceReply(selective=True),
+            reply_to_message_id=update.message.message_id,
+        )
+        return SPLIT_VALUES
+
+    return await _finalize_pending_via_message(update, context, split_mode, paid_for)
+
+
+async def _finalize_pending_via_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    split_mode: SplitMode,
+    paid_for: list[tuple[str, int]] | None,
+) -> int:
+    query = update.callback_query
+    assert query and query.message and update.effective_user and context.user_data is not None
+    resolved = resolve_group(update, context.user_data)
+    assert resolved
+    group_id, client = resolved
+    _id_name, currency = id_to_name_map(client)
+    selected: list[str] = context.user_data.get("selected_payees", [])
+    text, markup = _store_pending_expense(
+        context.user_data,
+        update.effective_user.id,
+        query.message.message_id,
+        tg_display_name(update),
+        selected,
+        group_id,
+        split_mode=split_mode,
+        paid_for=paid_for,
+        currency=currency,
+    )
+    _reset_add_state(context.user_data)
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=markup)
+    return ConversationHandler.END
+
+
+async def _finalize_pending_via_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    split_mode: SplitMode,
+    paid_for: list[tuple[str, int]] | None,
+) -> int:
+    assert update.message and update.effective_user and context.user_data is not None
+    resolved = resolve_group(update, context.user_data)
+    assert resolved
+    group_id, client = resolved
+    _id_name, currency = id_to_name_map(client)
+    selected: list[str] = context.user_data.get("selected_payees", [])
+    text, markup = _store_pending_expense(
+        context.user_data,
+        update.effective_user.id,
+        update.message.message_id,
+        tg_display_name(update),
+        selected,
+        group_id,
+        split_mode=split_mode,
+        paid_for=paid_for,
+        currency=currency,
+    )
+    _reset_add_state(context.user_data)
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=markup,
+        reply_to_message_id=update.message.message_id,
+    )
+    return ConversationHandler.END
 
 
 async def cancel_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

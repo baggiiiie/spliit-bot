@@ -6,6 +6,8 @@ from typing import Any
 import httpx
 from spliit.utils import get_current_timestamp
 
+from constants import SplitMode
+
 TRPC_BASE_URL = "https://spliit.app/api/trpc"
 TRPC_BATCH_PARAMS = {"batch": "1"}
 TRPC_TIMEOUT = 30
@@ -75,6 +77,7 @@ def create_expense(
     expense_date: str | None = None,
     category: int = 0,
     is_reimbursement: bool = False,
+    split_mode: SplitMode = SplitMode.EVENLY,
 ) -> None:
     _trpc_post(
         "groups.expenses.create",
@@ -90,7 +93,7 @@ def create_expense(
                     {"participant": participant_id, "shares": shares}
                     for participant_id, shares in paid_for
                 ],
-                "splitMode": "EVENLY",
+                "splitMode": split_mode.value,
                 "saveDefaultSplittingOptions": False,
                 "isReimbursement": is_reimbursement,
                 "documents": [],

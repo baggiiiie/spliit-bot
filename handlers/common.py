@@ -17,6 +17,7 @@ from config import (
 )
 from constants import (
     PendingExpense,
+    SplitMode,
 )
 from helpers import (
     confirm_keyboard,
@@ -112,8 +113,15 @@ def _store_pending_expense(
     tg_name: str,
     payee_ids: list[str],
     group_id: str,
+    split_mode: SplitMode = SplitMode.EVENLY,
+    paid_for: list[tuple[str, int]] | None = None,
+    currency: str = "",
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Build confirmation for a pending expense and store it."""
+    """Build confirmation for a pending expense and store it.
+
+    For ``EVENLY`` mode ``payee_ids`` is sufficient. For other modes pass
+    ``paid_for`` with share semantics matching ``split_mode``.
+    """
     title = user_data["expense_title"]
     amount = user_data["expense_amount"]
     payer_id = user_data["payer_id"]
@@ -122,17 +130,33 @@ def _store_pending_expense(
     reverse = {pid: name for name, pid in participants_map.items()}
     payee_names = [reverse[pid] for pid in payee_ids]
 
+    if paid_for is None:
+        paid_for = [(pid, 1) for pid in payee_ids]
+
     key = f"{user_id}_{message_id}"
     pending[key] = PendingExpense(
         title=title,
         amount_cents=int(amount * 100),
         payer_id=payer_id,
-        paid_for=[(pid, 1) for pid in payee_ids],
+        paid_for=paid_for,
         tg_name=tg_name,
         group_id=group_id,
+        split_mode=split_mode,
     )
 
-    return format_confirmation(title, amount, payer_name, payee_names), confirm_keyboard(key)
+    paid_for_named = [(reverse[pid], share) for pid, share in paid_for]
+    return (
+        format_confirmation(
+            title,
+            amount,
+            payer_name,
+            payee_names,
+            split_mode=split_mode,
+            paid_for_named=paid_for_named,
+            currency=currency,
+        ),
+        confirm_keyboard(key),
+    )
 
 
 def _reset_add_state(user_data: dict) -> None:
@@ -143,6 +167,7 @@ def _reset_add_state(user_data: dict) -> None:
         "payer_name",
         "selected_payees",
         "participants_map",
+        "split_mode",
     ):
         user_data.pop(key, None)
 

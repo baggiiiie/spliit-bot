@@ -22,6 +22,7 @@ from constants import (
     CB_SELECT_GROUP,
     CB_SETTLE,
     CB_SETTLE_CANCEL,
+    SplitMode,
     format_money,
 )
 from domain import id_to_name_map
@@ -35,6 +36,36 @@ from services import (
 from .common import _group_name, build_mention, reply_to_callback
 
 logger = logging.getLogger(__name__)
+
+
+def _format_split_line(
+    split_mode: SplitMode,
+    paid_for: list[tuple[str, int]],
+    id_name: dict[str, str],
+    amount_cents: int,
+    currency: str,
+) -> str:
+    payee_names = [id_name.get(pid, "Unknown") for pid, _ in paid_for]
+    if split_mode is SplitMode.EVENLY:
+        share = amount_cents / 100 / len(payee_names)
+        return (
+            f"Split ({html.escape(currency)}{share:.2f} each): "
+            f"{html.escape(', '.join(payee_names))}"
+        )
+    parts: list[str] = []
+    for (_, share), name in zip(paid_for, payee_names, strict=True):
+        if split_mode is SplitMode.BY_SHARES:
+            parts.append(f"{html.escape(name)} ({share})")
+        elif split_mode is SplitMode.BY_PERCENTAGE:
+            parts.append(f"{html.escape(name)} ({share / 100:g}%)")
+        else:  # BY_AMOUNT
+            parts.append(f"{html.escape(name)} ({format_money(share, currency)})")
+    label = {
+        SplitMode.BY_SHARES: "shares",
+        SplitMode.BY_PERCENTAGE: "%",
+        SplitMode.BY_AMOUNT: "amount",
+    }[split_mode]
+    return f"Split by {label}: {', '.join(parts)}"
 
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -56,6 +87,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         paid_for = info.paid_for
         tg_name = info.tg_name
         group_id = info.group_id
+        split_mode = info.split_mode
         expense_title = f"[telebot-{tg_name}] {title}"
         try:
             create_expense(
@@ -64,6 +96,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 paid_by=paid_by_id,
                 paid_for=paid_for,
                 amount=amount,
+                split_mode=split_mode,
             )
             if query.message:
                 await query.edit_message_reply_markup(reply_markup=None)
@@ -76,14 +109,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             involved = {*payee_names, payer_name}
             mentions = [await build_mention(n, context) for n in involved]
 
-            amount_display = amount / 100
-            share = amount_display / len(payee_names)
+            split_line = _format_split_line(split_mode, paid_for, id_name, amount, currency)
             msg = (
                 f"💸 <b>{html.escape(title)}</b> added\n"
                 f"Amount: {format_money(amount, currency)}\n"
                 f"Paid by: {html.escape(payer_name)}\n"
-                f"Split ({html.escape(currency)}{share:.2f} each): "
-                f"{html.escape(', '.join(payee_names))}\n\n"
+                f"{split_line}\n\n"
                 f"👋 {' '.join(mentions)}"
             )
             assert isinstance(query.message, Message)

@@ -31,9 +31,12 @@ from constants import (
     CB_PAYEE,
     CB_PAYER,
     CB_SELECT_GROUP,
+    CB_SPLIT_MODE,
     PAYEES,
     PAYER,
     SELECT_GROUP,
+    SPLIT_MODE,
+    SPLIT_VALUES,
     TITLE,
 )
 from handlers import (
@@ -46,6 +49,8 @@ from handlers import (
     interactive_payees,
     interactive_payer,
     interactive_select_group,
+    interactive_split_mode,
+    interactive_split_values,
     interactive_title,
     latest_cmd,
     settle_cmd,
@@ -118,6 +123,12 @@ def main() -> None:
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_amount)],
             PAYER: [CallbackQueryHandler(interactive_payer, pattern=rf"^{CB_PAYER}")],
             PAYEES: [CallbackQueryHandler(interactive_payees, pattern=rf"^{CB_PAYEE}")],
+            SPLIT_MODE: [
+                CallbackQueryHandler(interactive_split_mode, pattern=rf"^{CB_SPLIT_MODE}")
+            ],
+            SPLIT_VALUES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_split_values)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel_interactive)],
         allow_reentry=True,
