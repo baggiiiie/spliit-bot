@@ -120,6 +120,7 @@ def main() -> None:
             PAYEES: [CallbackQueryHandler(interactive_payees, pattern=rf"^{CB_PAYEE}")],
         },
         fallbacks=[CommandHandler("cancel", cancel_interactive)],
+        allow_reentry=True,
     )
     app.add_handler(add_conv_handler)
     app.add_handler(MessageHandler(filters.VOICE, voice_add_cmd))

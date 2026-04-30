@@ -781,6 +781,42 @@ class TestGroupSelection:
         assert update.message.reply_text.call_args.args[0] == "Use /switch in a DM."
 
 
+class TestTelegramAddCmd:
+    @patch("handlers.add_flow.is_allowed_chat", return_value=True)
+    @patch("handlers.add_flow.resolve_group")
+    def test_plain_add_starts_interactive_flow(self, mock_resolve, mock_allowed):
+        from constants import TITLE
+        from handlers import add_cmd
+
+        mock_resolve.return_value = ("test-group", MagicMock())
+        update = _make_update(text="/add")
+        ctx = MagicMock()
+        ctx.user_data = {}
+
+        state = asyncio.run(add_cmd(update, ctx))
+
+        assert state == TITLE
+        update.message.reply_text.assert_called_once()
+        assert update.message.reply_text.call_args.args[0] == "Enter expense title:"
+
+    @patch("handlers.add_flow.is_allowed_chat", return_value=True)
+    @patch("handlers.add_flow.resolve_group")
+    def test_add_with_bot_mention_starts_interactive_flow(self, mock_resolve, mock_allowed):
+        from constants import TITLE
+        from handlers import add_cmd
+
+        mock_resolve.return_value = ("test-group", MagicMock())
+        update = _make_update(text="/add@spliit_bot")
+        ctx = MagicMock()
+        ctx.user_data = {}
+
+        state = asyncio.run(add_cmd(update, ctx))
+
+        assert state == TITLE
+        update.message.reply_text.assert_called_once()
+        assert update.message.reply_text.call_args.args[0] == "Enter expense title:"
+
+
 class TestCli:
     def test_parser_group(self):
         args = build_parser().parse_args(["group"])

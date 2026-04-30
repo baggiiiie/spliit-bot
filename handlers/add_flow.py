@@ -58,7 +58,8 @@ async def _continue_add_flow(
     client: Spliit,
     text: str,
 ) -> int:
-    if text == "/add":
+    command_text = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text else ""
+    if command_text == "/add" and len(text.split(maxsplit=1)) == 1:
         await message.reply_text(
             "Enter expense title:",
             reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
