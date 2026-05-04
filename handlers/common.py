@@ -16,9 +16,9 @@ from config import (
     pending,
 )
 from constants import (
-    PendingExpense,
     SplitMode,
 )
+from expense_draft import clear_draft, get_draft
 from helpers import (
     confirm_keyboard,
     format_confirmation,
@@ -111,7 +111,6 @@ def _store_pending_expense(
     user_id: int,
     message_id: int,
     tg_name: str,
-    payee_ids: list[str],
     group_id: str,
     split_mode: SplitMode = SplitMode.EVENLY,
     paid_for: list[tuple[str, int]] | None = None,
@@ -119,37 +118,33 @@ def _store_pending_expense(
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Build confirmation for a pending expense and store it.
 
-    For ``EVENLY`` mode ``payee_ids`` is sufficient. For other modes pass
-    ``paid_for`` with share semantics matching ``split_mode``.
+    For ``EVENLY`` mode the draft's payee ids are sufficient. For other modes
+    pass ``paid_for`` with share semantics matching ``split_mode``.
     """
-    title = user_data["expense_title"]
-    amount = user_data["expense_amount"]
-    payer_id = user_data["payer_id"]
-    payer_name = user_data["payer_name"]
-    participants_map = user_data["participants_map"]
-    reverse = {pid: name for name, pid in participants_map.items()}
-    payee_names = [reverse[pid] for pid in payee_ids]
+    draft = get_draft(user_data)
+    assert draft.title is not None
+    assert draft.amount is not None
+    assert draft.payer_name is not None
+    reverse = draft.id_to_name()
+    payee_names = draft.payee_names()
 
     if paid_for is None:
-        paid_for = [(pid, 1) for pid in payee_ids]
+        paid_for = [(pid, 1) for pid in draft.payee_ids]
 
     key = f"{user_id}_{message_id}"
-    pending[key] = PendingExpense(
-        title=title,
-        amount_cents=int(amount * 100),
-        payer_id=payer_id,
-        paid_for=paid_for,
+    pending[key] = draft.to_pending_expense(
         tg_name=tg_name,
         group_id=group_id,
         split_mode=split_mode,
+        paid_for=paid_for,
     )
 
     paid_for_named = [(reverse[pid], share) for pid, share in paid_for]
     return (
         format_confirmation(
-            title,
-            amount,
-            payer_name,
+            draft.title,
+            draft.amount,
+            draft.payer_name,
             payee_names,
             split_mode=split_mode,
             paid_for_named=paid_for_named,
@@ -160,16 +155,7 @@ def _store_pending_expense(
 
 
 def _reset_add_state(user_data: dict) -> None:
-    for key in (
-        "expense_title",
-        "expense_amount",
-        "payer_id",
-        "payer_name",
-        "selected_payees",
-        "participants_map",
-        "split_mode",
-    ):
-        user_data.pop(key, None)
+    clear_draft(user_data)
 
 
 async def _notify_admin_llm_error(

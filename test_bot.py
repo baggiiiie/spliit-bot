@@ -27,8 +27,8 @@ from cli import (
     undo_cmd as cli_undo_cmd,
 )
 from constants import PendingDelete, PendingSettlement, SplitMode
-from helpers import parse_split_values
 from parsing import ParsedExpense, parse_add_command, parse_with_llm
+from splits import parse_split_values
 
 PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
 

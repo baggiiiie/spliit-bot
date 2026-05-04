@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import cast
 
 from spliit import Spliit
@@ -17,7 +16,6 @@ from config import (
 from constants import (
     AMOUNT,
     CB_PAYEE,
-    CB_PAYEE_ALL,
     CB_PAYEE_DONE,
     CB_PAYER,
     CB_SELECT_GROUP,
@@ -31,19 +29,34 @@ from constants import (
     SplitMode,
 )
 from domain import group_picker_options, id_to_name_map
+from expense_draft import ExpenseDraft, get_draft, set_draft
+from expense_intake import (
+    Ended,
+    IntakeField,
+    NeedsInput,
+    ReadyToConfirm,
+    Rejected,
+    apply_amount,
+    apply_payer,
+    apply_split_mode,
+    apply_split_values,
+    apply_title,
+    complete_payees,
+    empty_draft_started,
+    start_from_text,
+    toggle_payee,
+)
 from helpers import (
     group_picker_keyboard,
     is_allowed_chat,
     is_dm,
-    parse_split_values,
     participant_keyboard,
     split_mode_keyboard,
     tg_display_name,
 )
-from parsing import parse_add_command, parse_with_llm, transcribe_voice
+from parsing import transcribe_voice
 
 from .common import (
-    FORMAT_HELP,
     NO_GROUP_MSG,
     _group_name,
     _notify_admin_llm_error,
@@ -56,6 +69,69 @@ logger = logging.getLogger(__name__)
 
 
 _SPLIT_MODE_PROMPT = "How do you want to split it?"
+
+
+async def _prompt_title(message: Message) -> int:
+    await message.reply_text(
+        "Enter expense title:",
+        reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
+        reply_to_message_id=message.message_id,
+    )
+    return TITLE
+
+
+async def _prompt_amount(message: Message, draft: ExpenseDraft) -> int:
+    await message.reply_text(
+        f"*{draft.title}*\nEnter amount:",
+        parse_mode="Markdown",
+        reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
+        reply_to_message_id=message.message_id,
+    )
+    return AMOUNT
+
+
+async def _prompt_payer(message: Message, draft: ExpenseDraft) -> int:
+    assert draft.amount is not None
+    await message.reply_text(
+        f"*{draft.title}* — {draft.amount:.2f}\n\nWho paid?",
+        parse_mode="Markdown",
+        reply_markup=participant_keyboard(draft.participants_map, CB_PAYER),
+        reply_to_message_id=message.message_id,
+    )
+    return PAYER
+
+
+async def _prompt_payees(message: Message, draft: ExpenseDraft) -> int:
+    assert draft.amount is not None
+    await message.reply_text(
+        f"*{draft.title}* — {draft.amount:.2f}\n"
+        f"Paid by: {draft.payer_name}\n\nSelect who to split with:",
+        parse_mode="Markdown",
+        reply_markup=participant_keyboard(
+            draft.participants_map, CB_PAYEE, done_btn=("< Done >", CB_PAYEE_DONE)
+        ),
+        reply_to_message_id=message.message_id,
+    )
+    return PAYEES
+
+
+async def _render_needs_input_message(
+    message: Message, draft: ExpenseDraft, field: IntakeField
+) -> int:
+    match field:
+        case IntakeField.TITLE:
+            return await _prompt_title(message)
+        case IntakeField.AMOUNT:
+            return await _prompt_amount(message, draft)
+        case IntakeField.PAYER:
+            return await _prompt_payer(message, draft)
+        case IntakeField.PAYEES:
+            return await _prompt_payees(message, draft)
+        case IntakeField.SPLIT_MODE:
+            return await _prompt_split_mode_new_message(message)
+        case IntakeField.SPLIT_VALUES:
+            await _prompt_split_values_message(message, draft)
+            return SPLIT_VALUES
 
 
 async def _prompt_split_mode_new_message(message: Message) -> int:
@@ -72,6 +148,42 @@ async def _prompt_split_mode_edit(query: CallbackQuery) -> int:
     return SPLIT_MODE
 
 
+def _split_values_prompt(draft: ExpenseDraft) -> str:
+    assert draft.split_mode is not None
+    assert draft.amount is not None
+    example = {
+        SplitMode.BY_SHARES: "e.g. 2 1 1",
+        SplitMode.BY_PERCENTAGE: "e.g. 50 30 20",
+        SplitMode.BY_AMOUNT: f"e.g. amounts that sum to {draft.amount:.2f}",
+    }[draft.split_mode]
+    label = {
+        SplitMode.BY_SHARES: "shares",
+        SplitMode.BY_PERCENTAGE: "percentages (must sum to 100)",
+        SplitMode.BY_AMOUNT: f"amounts (must sum to {draft.amount:.2f})",
+    }[draft.split_mode]
+    return f"Enter {label} for each payee in order:\n{', '.join(draft.payee_names())}\n{example}"
+
+
+async def _prompt_split_values_message(message: Message, draft: ExpenseDraft) -> None:
+    await message.reply_text(
+        _split_values_prompt(draft),
+        reply_markup=ForceReply(selective=True),
+        reply_to_message_id=message.message_id,
+    )
+
+
+async def _prompt_split_values_edit(query: CallbackQuery, draft: ExpenseDraft) -> int:
+    await query.edit_message_text(_split_values_prompt(draft))
+    assert query.message
+    message = cast(Message, query.message)
+    await message.reply_text(
+        "Reply with the values:",
+        reply_markup=ForceReply(selective=True),
+        reply_to_message_id=message.message_id,
+    )
+    return SPLIT_VALUES
+
+
 async def _continue_add_flow(
     message: Message,
     context: ContextTypes.DEFAULT_TYPE,
@@ -81,16 +193,12 @@ async def _continue_add_flow(
     client: Spliit,
     text: str,
 ) -> int:
-    command_text = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text else ""
-    if command_text == "/add" and len(text.split(maxsplit=1)) == 1:
-        await message.reply_text(
-            "Enter expense title:",
-            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
-            reply_to_message_id=message.message_id,
-        )
-        return TITLE
-
     assert context.user_data is not None
+
+    if empty_draft_started(text):
+        draft = ExpenseDraft()
+        set_draft(context.user_data, draft)
+        return await _prompt_title(message)
 
     try:
         participants_map = client.get_participants()
@@ -101,108 +209,37 @@ async def _continue_add_flow(
         )
         return ConversationHandler.END
 
-    context.user_data["participants_map"] = participants_map
-    participant_names = list(participants_map.keys())
-
-    expense = parse_add_command(text, participant_names)
-
-    if not expense:
-        raw_text = re.sub(r"^/add[-_]?bill?\s*", "", text, flags=re.IGNORECASE).strip()
-        has_number = bool(re.search(r"\d", raw_text))
-        has_participant = any(n.lower() in raw_text.lower() for n in participant_names)
-        if not has_number and not has_participant:
-            await message.reply_text(
-                FORMAT_HELP,
-                parse_mode="Markdown",
-                reply_to_message_id=message.message_id,
-            )
-            return ConversationHandler.END
-        llm_result, raw_response = await parse_with_llm(raw_text, participant_names)
-        if isinstance(llm_result, str):
+    draft, outcome = await start_from_text(text, participants_map)
+    set_draft(context.user_data, draft)
+    if isinstance(outcome, NeedsInput):
+        return await _render_needs_input_message(message, draft, outcome.field)
+    if isinstance(outcome, Rejected):
+        if outcome.admin_report:
             await _notify_admin_llm_error(
                 context,
                 message.from_user,
-                raw_text,
-                llm_result,
-                raw_response,
+                outcome.admin_report.raw_text,
+                outcome.admin_report.user_message,
+                outcome.admin_report.raw_response,
             )
-            await message.reply_text(
-                llm_result,
-                parse_mode="Markdown",
-                reply_to_message_id=message.message_id,
-            )
-            return ConversationHandler.END
-        if llm_result:
-            expense = llm_result
-            logger.info(f"LLM parsed: {expense}")
-
-    if not expense:
         await message.reply_text(
-            FORMAT_HELP,
+            outcome.user_message,
             parse_mode="Markdown",
             reply_to_message_id=message.message_id,
         )
         return ConversationHandler.END
-
-    if expense.title:
-        context.user_data["expense_title"] = expense.title
-    if expense.amount:
-        context.user_data["expense_amount"] = expense.amount
-    if expense.payer:
-        context.user_data["payer_id"] = participants_map[expense.payer]
-        context.user_data["payer_name"] = expense.payer
-    if expense.participants:
-        name_map = {n.lower(): (n, pid) for n, pid in participants_map.items()}
-        matched = [
-            (n, pid)
-            for n, pid in ((name, name_map.get(name)) for name in expense.participants)
-            if pid
-        ]
-        context.user_data["selected_payees"] = [pid for _, (_, pid) in matched]
-
-    if not context.user_data.get("expense_title"):
-        await message.reply_text(
-            "Enter expense title:",
-            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. Dinner"),
-            reply_to_message_id=message.message_id,
+    if isinstance(outcome, Ended):
+        if outcome.user_message:
+            await message.reply_text(
+                outcome.user_message,
+                parse_mode="Markdown",
+                reply_to_message_id=message.message_id,
+            )
+        return ConversationHandler.END
+    if isinstance(outcome, ReadyToConfirm):
+        return await _finalize_pending_via_message(
+            message, context, user_id, tg_name, group_id, outcome.split_mode, outcome.paid_for
         )
-        return TITLE
-
-    if not context.user_data.get("expense_amount"):
-        await message.reply_text(
-            f"*{context.user_data['expense_title']}*\nEnter amount:",
-            parse_mode="Markdown",
-            reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
-            reply_to_message_id=message.message_id,
-        )
-        return AMOUNT
-
-    if not context.user_data.get("payer_id"):
-        title = context.user_data["expense_title"]
-        amount = context.user_data["expense_amount"]
-        await message.reply_text(
-            f"*{title}* — {amount:.2f}\n\nWho paid?",
-            parse_mode="Markdown",
-            reply_markup=participant_keyboard(participants_map, CB_PAYER),
-            reply_to_message_id=message.message_id,
-        )
-        return PAYER
-
-    if not context.user_data.get("selected_payees"):
-        title = context.user_data["expense_title"]
-        amount = context.user_data["expense_amount"]
-        payer_name = context.user_data["payer_name"]
-        await message.reply_text(
-            f"*{title}* — {amount:.2f}\nPaid by: {payer_name}\n\nSelect who to split with:",
-            parse_mode="Markdown",
-            reply_markup=participant_keyboard(
-                participants_map, CB_PAYEE, done_btn=("< Done >", CB_PAYEE_DONE)
-            ),
-            reply_to_message_id=message.message_id,
-        )
-        return PAYEES
-
-    return await _prompt_split_mode_new_message(message)
 
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
@@ -244,35 +281,29 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
 async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message and update.message.text and context.user_data is not None
-    context.user_data["expense_title"] = update.message.text.strip()
-    await update.message.reply_text(
-        "Enter amount:",
-        reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
-        reply_to_message_id=update.message.message_id,
-    )
-    return AMOUNT
+    draft = get_draft(context.user_data)
+    outcome = apply_title(draft, update.message.text)
+    assert isinstance(outcome, NeedsInput)
+    return await _render_needs_input_message(update.message, draft, outcome.field)
 
 
 async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     assert update.message and update.message.text and context.user_data is not None
-    text = update.message.text.strip()
-    match = re.match(r"(\d+(?:\.\d+)?)", text)
-    if not match:
+    draft = get_draft(context.user_data)
+    outcome = apply_amount(draft, update.message.text)
+    if isinstance(outcome, Rejected):
         await update.message.reply_text(
-            "Invalid amount. Enter a number:",
+            outcome.user_message,
             reply_markup=ForceReply(selective=True, input_field_placeholder="e.g. 50.00"),
             reply_to_message_id=update.message.message_id,
         )
         return AMOUNT
 
-    context.user_data["expense_amount"] = float(match.group(1))
-
     resolved = resolve_group(update, context.user_data)
     assert resolved
     _group_id, client = resolved
     try:
-        participants_map = client.get_participants()
-        context.user_data["participants_map"] = participants_map
+        draft.participants_map = client.get_participants()
     except Exception as e:
         await update.message.reply_text(
             f"Error: {e}",
@@ -280,12 +311,8 @@ async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return ConversationHandler.END
 
-    await update.message.reply_text(
-        "Who paid?",
-        reply_markup=participant_keyboard(participants_map, CB_PAYER),
-        reply_to_message_id=update.message.message_id,
-    )
-    return PAYER
+    assert isinstance(outcome, NeedsInput)
+    return await _render_needs_input_message(update.message, draft, outcome.field)
 
 
 async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -294,17 +321,15 @@ async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
 
     payer_id = query.data[len(CB_PAYER) :]
-    participants_map = context.user_data["participants_map"]
-    reverse = {pid: name for name, pid in participants_map.items()}
+    draft = get_draft(context.user_data)
+    participants_map = draft.participants_map
 
-    context.user_data["payer_id"] = payer_id
-    context.user_data["payer_name"] = reverse[payer_id]
+    outcome = apply_payer(draft, payer_id)
 
-    pre_selected = context.user_data.get("selected_payees", [])
-    if pre_selected:
+    if isinstance(outcome, NeedsInput) and outcome.field is IntakeField.SPLIT_MODE:
         return await _prompt_split_mode_edit(query)
 
-    context.user_data["selected_payees"] = []
+    draft.payee_ids = []
     await query.edit_message_text(
         "Select who to split with (tap to toggle, then Done):",
         reply_markup=participant_keyboard(
@@ -321,28 +346,22 @@ async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     data: str = query.data
     if data == CB_PAYEE_DONE:
-        selected: list[str] = context.user_data.get("selected_payees", [])
-        if not selected:
-            await query.answer("Select at least one person", show_alert=True)
+        draft = get_draft(context.user_data)
+        outcome = complete_payees(draft)
+        if isinstance(outcome, Rejected):
+            await query.answer(outcome.user_message, show_alert=True)
             return PAYEES
 
         return await _prompt_split_mode_edit(query)
 
     payee_id = data[len(CB_PAYEE) :]
-    participants_map = context.user_data["participants_map"]
-    selected = context.user_data.get("selected_payees", [])
-    if payee_id == CB_PAYEE_ALL:
-        all_ids = list(participants_map.values())
-        selected = [] if set(selected) == set(all_ids) else list(all_ids)
-    elif payee_id in selected:
-        selected.remove(payee_id)
-    else:
-        selected.append(payee_id)
-    context.user_data["selected_payees"] = selected
+    draft = get_draft(context.user_data)
+    participants_map = draft.participants_map
+    toggle_payee(draft, payee_id)
     await query.edit_message_text(
         "Select who to split with (tap to toggle, then Done):",
         reply_markup=participant_keyboard(
-            participants_map, CB_PAYEE, set(selected), done_btn=("✓ Done", CB_PAYEE_DONE)
+            participants_map, CB_PAYEE, set(draft.payee_ids), done_btn=("✓ Done", CB_PAYEE_DONE)
         ),
     )
     return PAYEES
@@ -354,41 +373,16 @@ async def interactive_split_mode(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
 
     raw = query.data[len(CB_SPLIT_MODE) :]
-    try:
-        split_mode = SplitMode(raw)
-    except ValueError:
-        return SPLIT_MODE
+    draft = get_draft(context.user_data)
+    outcome = apply_split_mode(draft, raw)
 
-    selected: list[str] = context.user_data.get("selected_payees", [])
-    participants_map: dict[str, str] = context.user_data["participants_map"]
-    reverse = {pid: name for name, pid in participants_map.items()}
-    payee_names = [reverse[pid] for pid in selected]
-
-    if split_mode is SplitMode.EVENLY:
-        return await _finalize_pending_via_callback(update, context, split_mode, paid_for=None)
-
-    context.user_data["split_mode"] = split_mode.value
-    amount = context.user_data["expense_amount"]
-    example = {
-        SplitMode.BY_SHARES: "e.g. 2 1 1",
-        SplitMode.BY_PERCENTAGE: "e.g. 50 30 20",
-        SplitMode.BY_AMOUNT: f"e.g. amounts that sum to {amount:.2f}",
-    }[split_mode]
-    label = {
-        SplitMode.BY_SHARES: "shares",
-        SplitMode.BY_PERCENTAGE: "percentages (must sum to 100)",
-        SplitMode.BY_AMOUNT: f"amounts (must sum to {amount:.2f})",
-    }[split_mode]
-    prompt = f"Enter {label} for each payee in order:\n{', '.join(payee_names)}\n{example}"
-    await query.edit_message_text(prompt)
-    assert query.message
-    message = cast(Message, query.message)
-    await message.reply_text(
-        "Reply with the values:",
-        reply_markup=ForceReply(selective=True),
-        reply_to_message_id=message.message_id,
-    )
-    return SPLIT_VALUES
+    if isinstance(outcome, ReadyToConfirm):
+        return await _finalize_pending_via_callback(
+            update, context, outcome.split_mode, outcome.paid_for
+        )
+    if isinstance(outcome, NeedsInput) and outcome.field is IntakeField.SPLIT_VALUES:
+        return await _prompt_split_values_edit(query, draft)
+    return SPLIT_MODE
 
 
 async def interactive_split_values(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -399,29 +393,22 @@ async def interactive_split_values(update: Update, context: ContextTypes.DEFAULT
         and context.user_data is not None
     )
 
-    raw_mode = context.user_data.get("split_mode")
-    if not raw_mode:
+    draft = get_draft(context.user_data)
+    outcome = apply_split_values(draft, update.message.text)
+    if isinstance(outcome, Ended):
         return ConversationHandler.END
-    split_mode = SplitMode(raw_mode)
-
-    selected: list[str] = context.user_data.get("selected_payees", [])
-    participants_map: dict[str, str] = context.user_data["participants_map"]
-    reverse = {pid: name for name, pid in participants_map.items()}
-    payee_names = [reverse[pid] for pid in selected]
-    amount_cents = int(context.user_data["expense_amount"] * 100)
-
-    paid_for, error = parse_split_values(
-        update.message.text.strip(), selected, payee_names, split_mode, amount_cents
-    )
-    if error:
+    if isinstance(outcome, Rejected):
         await update.message.reply_text(
-            f"{error}\nTry again:",
+            outcome.user_message,
             reply_markup=ForceReply(selective=True),
             reply_to_message_id=update.message.message_id,
         )
         return SPLIT_VALUES
 
-    return await _finalize_pending_via_message(update, context, split_mode, paid_for)
+    assert isinstance(outcome, ReadyToConfirm)
+    return await _finalize_pending_via_update_message(
+        update, context, outcome.split_mode, outcome.paid_for
+    )
 
 
 async def _finalize_pending_via_callback(
@@ -436,13 +423,11 @@ async def _finalize_pending_via_callback(
     assert resolved
     group_id, client = resolved
     _id_name, currency = id_to_name_map(client)
-    selected: list[str] = context.user_data.get("selected_payees", [])
     text, markup = _store_pending_expense(
         context.user_data,
         update.effective_user.id,
         query.message.message_id,
         tg_display_name(update),
-        selected,
         group_id,
         split_mode=split_mode,
         paid_for=paid_for,
@@ -454,6 +439,38 @@ async def _finalize_pending_via_callback(
 
 
 async def _finalize_pending_via_message(
+    message: Message,
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    tg_name: str,
+    group_id: str,
+    split_mode: SplitMode,
+    paid_for: list[tuple[str, int]] | None,
+) -> int:
+    assert context.user_data is not None
+    client = get_spliit(group_id)
+    _id_name, currency = id_to_name_map(client)
+    text, markup = _store_pending_expense(
+        context.user_data,
+        user_id,
+        message.message_id,
+        tg_name,
+        group_id,
+        split_mode=split_mode,
+        paid_for=paid_for,
+        currency=currency,
+    )
+    _reset_add_state(context.user_data)
+    await message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=markup,
+        reply_to_message_id=message.message_id,
+    )
+    return ConversationHandler.END
+
+
+async def _finalize_pending_via_update_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     split_mode: SplitMode,
@@ -462,28 +479,16 @@ async def _finalize_pending_via_message(
     assert update.message and update.effective_user and context.user_data is not None
     resolved = resolve_group(update, context.user_data)
     assert resolved
-    group_id, client = resolved
-    _id_name, currency = id_to_name_map(client)
-    selected: list[str] = context.user_data.get("selected_payees", [])
-    text, markup = _store_pending_expense(
-        context.user_data,
+    group_id, _client = resolved
+    return await _finalize_pending_via_message(
+        update.message,
+        context,
         update.effective_user.id,
-        update.message.message_id,
         tg_display_name(update),
-        selected,
         group_id,
-        split_mode=split_mode,
-        paid_for=paid_for,
-        currency=currency,
+        split_mode,
+        paid_for,
     )
-    _reset_add_state(context.user_data)
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=markup,
-        reply_to_message_id=update.message.message_id,
-    )
-    return ConversationHandler.END
 
 
 async def cancel_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
