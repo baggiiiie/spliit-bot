@@ -8,7 +8,7 @@ If you encounter something surprising or confusing in this project, add it to th
 
 ## Core Commands
 
-- Run bot: `uv run python bot.py`
+- Run bot: `uv run python app.py` (or `uv run spliit-bot`)
 - Run CLI: `uv run spliit-cli`
 - Tests: `uv run python -m pytest test_bot.py -m 'not llm' -v`
 - LLM tests only: `uv run python -m pytest test_bot.py -m llm -v`
@@ -20,15 +20,20 @@ Run `-m llm` tests only when `prompt.txt` changes.
 
 ## Architecture Rules
 
-- Keep `bot.py` thin. No business logic there.
-- Read environment variables only in `config.py`.
-- Keep Telegram-specific flow in `handlers/`.
-- Keep `helpers.py` pure: no handler logic, no HTTP calls.
-- Keep `parsing.py` focused on parsing. No Telegram imports.
-- Put Spliit API access in `services.py`.
-- Use callback prefix constants from `constants.py`, never magic strings.
-- Use pending-state dataclasses (`PendingExpense`, `PendingDelete`, `PendingSettlement`), never raw tuples.
-- Use `format_money()` for cents→display formatting, never inline `/ 100`.
+- Keep `app.py` thin. No business logic there; it only wires `telegram_bot/routing.build_handlers`.
+- Read environment variables only in `config.py`. No side effects beyond reading env.
+- Load `users.json` / `groups.json` via `domain/registry.py`, not in `config.py`.
+- Keep Telegram-specific flow in `telegram_bot/`.
+- Keep Telegram identity/access helpers in `telegram_bot/access.py`: no handler logic, no HTTP calls.
+- Keep Telegram rendering and callback reply helpers in `telegram_bot/ui.py`.
+- Keep LLM parsing in `llm/parser.py` and voice transcription in `llm/voice.py`. No Telegram imports. The prompt template is read lazily from `prompt.txt` inside `llm/parser.py`.
+- Put Spliit API access in `spliit_integration/` (`gateway.py`, `trpc.py`). Only `trpc.py` may use `dict[str, Any]`; the gateway returns typed `domain/` value objects.
+- Use callback prefix and conversation state constants from `telegram_bot/constants.py`, never magic strings.
+- Use pending-state dataclasses from `telegram_bot/session.py` (`PendingExpense`, `PendingDelete`, `PendingSettlement`), never raw tuples. Access `context.user_data` only through `Session`.
+- Use `SplitMode` / `PaidFor` from `domain/split.py`.
+- Use `format_money()` from `domain/money.py` for cents→display formatting, never inline `/ 100`.
+- Keep CLI entry in `cli/__main__.py` and CLI-only formatting in `cli/format.py`.
+- Keep infra concerns (logging, health HTTP) in `infra/`.
 
 ## Conventions
 
@@ -42,7 +47,7 @@ Run `-m llm` tests only when `prompt.txt` changes.
 
 - Handler top-level failures should log and reply with `Error: {e}`
 - Use `assert` for invariants, not user input validation
-- `parse_with_llm` returns `ParsedExpense | str | None`
+- `parse_with_llm` returns `LLMParsedExpense | ParseFailure | None`
 - Do not swallow exceptions silently
 
 ## Testing Notes

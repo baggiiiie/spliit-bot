@@ -14,4 +14,4 @@ RUN uv sync --frozen --no-dev
 ENV HEALTH_HTTP_PORT=80
 EXPOSE 80
 
-CMD ["uv", "run", "python", "bot.py"]
+CMD ["uv", "run", "python", "app.py"]

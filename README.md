@@ -18,7 +18,7 @@ Telegram bot for managing [Spliit](https://spliit.app) expenses.
 4. Install and run:
    ```bash
    uv sync
-   uv run python bot.py
+   uv run python app.py
    ```
 
 ## Deploy with [ONCE](https://github.com/basecamp/once)

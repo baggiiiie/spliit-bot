@@ -5,7 +5,8 @@ import asyncio
 import json
 from dataclasses import asdict, dataclass
 
-from parsing import ParsedExpense, parse_with_llm
+from domain.expense import LLMParsedExpense, ParseFailure
+from llm.parser import parse_with_llm
 
 PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
 
@@ -14,7 +15,7 @@ PARTICIPANTS = ["Baggie", "Neo", "Yoga", "Ricky"]
 class EvalCase:
     name: str
     message: str
-    expected: ParsedExpense | None
+    expected: LLMParsedExpense | None
     is_expense: bool
     tool_ready: bool = False
 
@@ -38,7 +39,7 @@ CASES = [
     EvalCase(
         name="payer_first_with_with",
         message="baggie paid 32 for ikea lunch with ricky",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="ikea lunch",
             amount=32.0,
             payer="Baggie",
@@ -50,7 +51,7 @@ CASES = [
     EvalCase(
         name="split_between_phrase",
         message="dinner cost 100 split between baggie and neo, baggie paid",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="dinner",
             amount=100.0,
             payer="Baggie",
@@ -62,7 +63,7 @@ CASES = [
     EvalCase(
         name="payer_covered_for_subset",
         message="neo covered grab 18.6 for neo and yoga",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="grab",
             amount=18.6,
             payer="Neo",
@@ -74,7 +75,7 @@ CASES = [
     EvalCase(
         name="amount_first_payer_last",
         message=("please add 45.20 for board games split across baggie neo yoga ricky, yoga paid"),
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="board games",
             amount=45.2,
             payer="Yoga",
@@ -86,7 +87,7 @@ CASES = [
     EvalCase(
         name="everyone_without_payer",
         message="lunch 50 everyone splits",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="lunch",
             amount=50.0,
             payer=None,
@@ -97,7 +98,7 @@ CASES = [
     EvalCase(
         name="paid_by_phrase",
         message="add movie tickets 27.5 paid by yoga for baggie and yoga",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="movie tickets",
             amount=27.5,
             payer="Yoga",
@@ -109,7 +110,7 @@ CASES = [
     EvalCase(
         name="all_of_us_phrase",
         message="ricky bought snacks for 14.90 for all of us",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="snacks",
             amount=14.9,
             payer="Ricky",
@@ -121,7 +122,7 @@ CASES = [
     EvalCase(
         name="explicit_split_with",
         message="uber home 22, neo paid, split with baggie and neo",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="uber home",
             amount=22.0,
             payer="Neo",
@@ -133,7 +134,7 @@ CASES = [
     EvalCase(
         name="self_only",
         message="baggie spent 9.5 on boba for baggie",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="boba",
             amount=9.5,
             payer="Baggie",
@@ -145,7 +146,7 @@ CASES = [
     EvalCase(
         name="subset_without_payer_in_title",
         message="taxi 30 for neo and ricky, ricky paid",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="taxi",
             amount=30.0,
             payer="Ricky",
@@ -157,7 +158,7 @@ CASES = [
     EvalCase(
         name="covered_it_phrase",
         message="brunch was 64.80 and yoga covered it for baggie, neo, yoga",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="brunch",
             amount=64.8,
             payer="Yoga",
@@ -169,7 +170,7 @@ CASES = [
     EvalCase(
         name="missing_payer",
         message="coffee 12 split with neo and ricky",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="coffee",
             amount=12.0,
             payer=None,
@@ -180,7 +181,7 @@ CASES = [
     EvalCase(
         name="split_among_phrase",
         message="please add dessert 16.8, neo paid, split among baggie neo yoga",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="dessert",
             amount=16.8,
             payer="Neo",
@@ -192,7 +193,7 @@ CASES = [
     EvalCase(
         name="everyone_with_explicit_payer",
         message="ricky covered airport taxi 41 for everyone",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="airport taxi",
             amount=41.0,
             payer="Ricky",
@@ -204,7 +205,7 @@ CASES = [
     EvalCase(
         name="only_subset_splitting",
         message="booked mahjong room 88, paid by yoga, only yoga and neo splitting",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="mahjong room",
             amount=88.0,
             payer="Yoga",
@@ -216,7 +217,7 @@ CASES = [
     EvalCase(
         name="single_participant_without_payer",
         message="add coffee beans 14 for baggie only",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="coffee beans",
             amount=14.0,
             payer=None,
@@ -227,7 +228,7 @@ CASES = [
     EvalCase(
         name="plus_sign_participants",
         message="neo bought fries 6.5 for neo + ricky",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="fries",
             amount=6.5,
             payer="Neo",
@@ -239,7 +240,7 @@ CASES = [
     EvalCase(
         name="shared_by_without_payer",
         message="movie 28 shared by neo and yoga",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="movie",
             amount=28.0,
             payer=None,
@@ -250,7 +251,7 @@ CASES = [
     EvalCase(
         name="among_without_payer",
         message="snacks 12 among neo and yoga",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="snacks",
             amount=12.0,
             payer=None,
@@ -261,7 +262,7 @@ CASES = [
     EvalCase(
         name="slash_separated_participants",
         message="karaoke 25 for neo/yoga/ricky",
-        expected=ParsedExpense(
+        expected=LLMParsedExpense(
             title="karaoke",
             amount=25.0,
             payer=None,
@@ -328,8 +329,8 @@ async def _run_case(case: EvalCase) -> EvalResult:
     result, raw_response = await parse_with_llm(case.message, PARTICIPANTS)
 
     if not case.is_expense:
-        success = isinstance(result, str) or result is None
-        parsed = asdict(result) if isinstance(result, ParsedExpense) else result
+        success = isinstance(result, ParseFailure) or result is None
+        parsed = asdict(result) if isinstance(result, LLMParsedExpense | ParseFailure) else result
         return EvalResult(
             name=case.name,
             success=success,
@@ -345,7 +346,7 @@ async def _run_case(case: EvalCase) -> EvalResult:
 
     expected = case.expected
     assert expected is not None
-    parsed_expense = result if isinstance(result, ParsedExpense) else ParsedExpense()
+    parsed_expense = result if isinstance(result, LLMParsedExpense) else LLMParsedExpense()
 
     comparisons = {
         "title": _norm_title(parsed_expense.title) == _norm_title(expected.title),

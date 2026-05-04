@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "spliit-telegram-bot"
 version = "0.1.0"
@@ -13,7 +17,12 @@ dependencies = [
 ]
 
 [project.scripts]
-spliit-cli = "cli:main"
+spliit-cli = "cli.__main__:main"
+spliit-bot = "app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["cli", "domain", "infra", "llm", "spliit_integration", "telegram_bot"]
+include = ["app.py", "config.py"]
 
 [tool.uv.sources]
 spliit = { git = "https://github.com/guysoft/SpliitApi.git" }
