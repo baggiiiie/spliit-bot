@@ -27,6 +27,9 @@ from cli import (
     undo_cmd as cli_undo_cmd,
 )
 from constants import PendingDelete, PendingSettlement, SplitMode
+from domain import ParticipantDirectory
+from expense_confirmation import build_expense_confirmation
+from expense_draft import ExpenseDraft
 from parsing import ParsedExpense, parse_add_command, parse_with_llm
 from splits import parse_split_values
 
@@ -167,6 +170,29 @@ class _FakeAsyncClient:
 
     async def post(self, *args, **kwargs):
         return self._responses.pop(0)
+
+
+class TestExpenseConfirmation:
+    def test_builds_pending_expense_without_storing_it(self):
+        draft = ExpenseDraft.with_participants({"Baggie": "pid-1", "Neo": "pid-2", "Yoga": "pid-3"})
+        draft.title = "Dinner"
+        draft.amount = 42.5
+        draft.set_payer_id("pid-1")
+        draft.payee_ids = ["pid-1", "pid-2"]
+
+        confirmation = build_expense_confirmation(
+            draft,
+            key="confirm-key",
+            tg_name="Baggie",
+            group_id="group-1",
+            currency="$",
+        )
+
+        assert "Dinner" in confirmation.text
+        assert "42.50" in confirmation.text
+        assert confirmation.pending_expense.title == "Dinner"
+        assert confirmation.pending_expense.amount_cents == 4250
+        assert confirmation.pending_expense.paid_for == [("pid-1", 1), ("pid-2", 1)]
 
 
 class TestParseWithLLMRetries:
@@ -454,11 +480,10 @@ class TestIsAllowedChat:
 
 
 class TestLatestCmd:
-    @patch("handlers.commands.id_to_name_map", return_value=({}, "$"))
     @patch("handlers.commands.get_activities", return_value=FAKE_ACTIVITIES)
     @patch("handlers.commands.is_allowed_chat", return_value=True)
-    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
-    def test_shows_latest_activities(self, mock_resolve, mock_allowed, mock_get, mock_idname):
+    @patch("group_resolution.resolve_group", return_value=("test-group-id", MagicMock()))
+    def test_shows_latest_activities(self, mock_resolve, mock_allowed, mock_get):
         from handlers import latest_cmd
 
         update = _make_update()
@@ -475,11 +500,10 @@ class TestLatestCmd:
         assert "Updated group" in text
         assert call_kwargs.kwargs.get("parse_mode") == "HTML"
 
-    @patch("handlers.commands.id_to_name_map", return_value=({}, "$"))
     @patch("handlers.commands.get_activities", return_value=[])
     @patch("handlers.commands.is_allowed_chat", return_value=True)
-    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
-    def test_no_expenses(self, mock_resolve, mock_allowed, mock_get, mock_idname):
+    @patch("group_resolution.resolve_group", return_value=("test-group-id", MagicMock()))
+    def test_no_expenses(self, mock_resolve, mock_allowed, mock_get):
         from handlers import latest_cmd
 
         update = _make_update()
@@ -493,7 +517,7 @@ class TestLatestCmd:
         assert text == "No activity found."
 
     @patch("handlers.commands.is_allowed_chat", return_value=True)
-    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("group_resolution.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_invalid_count(self, mock_resolve, mock_allowed):
         from handlers import latest_cmd
 
@@ -520,7 +544,7 @@ class TestLatestCmd:
 class TestUndoCmd:
     @patch("handlers.commands.get_activities", return_value=FAKE_ACTIVITIES)
     @patch("handlers.commands.is_allowed_chat", return_value=True)
-    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("group_resolution.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_shows_latest_activity(self, mock_resolve, mock_allowed, mock_get):
         from handlers import undo_cmd
 
@@ -537,7 +561,7 @@ class TestUndoCmd:
 
     @patch("handlers.commands.get_activities", return_value=[])
     @patch("handlers.commands.is_allowed_chat", return_value=True)
-    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("group_resolution.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_no_expenses(self, mock_resolve, mock_allowed, mock_get):
         from handlers import undo_cmd
 
@@ -553,7 +577,7 @@ class TestUndoCmd:
 
     @patch("handlers.commands.get_activities", return_value=FAKE_ACTIVITIES[:2])
     @patch("handlers.commands.is_allowed_chat", return_value=True)
-    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("group_resolution.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_non_undoable_activity(self, mock_resolve, mock_allowed, mock_get):
         from handlers import undo_cmd
 
@@ -629,12 +653,16 @@ class TestUndoButton:
 
 class TestSettleCmd:
     @patch(
-        "handlers.commands.id_to_name_map",
-        return_value=({"pid-1": "Baggie", "pid-2": "Neo", "pid-3": "Yoga"}, "$"),
+        "handlers.commands.participant_directory",
+        return_value=ParticipantDirectory(
+            id_to_name={"pid-1": "Baggie", "pid-2": "Neo", "pid-3": "Yoga"},
+            name_to_id={"baggie": "pid-1", "neo": "pid-2", "yoga": "pid-3"},
+            currency="$",
+        ),
     )
     @patch("handlers.commands.get_balances", return_value=FAKE_BALANCES)
     @patch("handlers.commands.is_allowed_chat", return_value=True)
-    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
+    @patch("group_resolution.resolve_group", return_value=("test-group-id", MagicMock()))
     def test_shows_suggested_reimbursements(
         self, mock_resolve, mock_allowed, mock_get, mock_idname
     ):
@@ -656,10 +684,13 @@ class TestSettleCmd:
         assert markup.inline_keyboard[-1][0].callback_data == "settleno_42_999"
 
     @patch("handlers.commands.get_balances", return_value={"balances": {}, "reimbursements": []})
-    @patch("handlers.commands.id_to_name_map", return_value=({}, "$"))
+    @patch(
+        "handlers.commands.participant_directory",
+        return_value=ParticipantDirectory(id_to_name={}, name_to_id={}, currency="$"),
+    )
     @patch("handlers.commands.is_allowed_chat", return_value=True)
-    @patch("handlers.common.resolve_group", return_value=("test-group-id", MagicMock()))
-    def test_no_reimbursements(self, mock_resolve, mock_allowed, mock_idname, mock_get):
+    @patch("group_resolution.resolve_group", return_value=("test-group-id", MagicMock()))
+    def test_no_reimbursements(self, mock_resolve, mock_allowed, mock_directory, mock_get):
         from handlers import settle_cmd
 
         update = _make_update()
@@ -674,8 +705,12 @@ class TestSettleCmd:
 
 class TestSettleButton:
     @patch(
-        "handlers.callbacks.id_to_name_map",
-        return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"),
+        "handlers.callbacks.participant_directory",
+        return_value=ParticipantDirectory(
+            id_to_name={"pid-1": "Baggie", "pid-2": "Neo"},
+            name_to_id={"baggie": "pid-1", "neo": "pid-2"},
+            currency="$",
+        ),
     )
     @patch("handlers.callbacks.settle_reimbursement")
     @patch("handlers.callbacks.get_spliit", return_value=MagicMock())
@@ -891,7 +926,7 @@ class TestCli:
         assert args.index == 2
         assert args.yes is True
 
-    @patch("cli.get_spliit")
+    @patch("cli_target.get_spliit")
     def test_group_cmd(self, mock_get_spliit, capsys):
         client = MagicMock()
         client.get_group.return_value = {
@@ -911,14 +946,15 @@ class TestCli:
         assert "- Neo" in captured.out
 
     @patch(
-        "cli.id_to_name_map",
-        return_value=(
-            {"pid-1": "Baggie", "pid-2": "Neo", "pid-3": "Yoga"},
-            "$",
+        "cli.participant_directory",
+        return_value=ParticipantDirectory(
+            id_to_name={"pid-1": "Baggie", "pid-2": "Neo", "pid-3": "Yoga"},
+            name_to_id={"baggie": "pid-1", "neo": "pid-2", "yoga": "pid-3"},
+            currency="$",
         ),
     )
     @patch("cli.get_balances", return_value=FAKE_BALANCES)
-    @patch("cli.get_spliit")
+    @patch("cli_target.get_spliit")
     def test_balance_cmd(self, mock_get_spliit, mock_get, mock_idname, capsys):
         client = MagicMock()
         client.get_group.return_value = {"name": "Trip"}
@@ -934,7 +970,7 @@ class TestCli:
         assert "Baggie -> Neo: $12.50" in captured.out
 
     @patch("cli.get_activities", return_value=FAKE_ACTIVITIES[:1])
-    @patch("cli.get_spliit", return_value=MagicMock())
+    @patch("cli_target.get_spliit", return_value=MagicMock())
     def test_latest_cmd(self, mock_get_spliit, mock_get, capsys):
         code = cli_latest_cmd(1, "test-group")
 
@@ -945,9 +981,16 @@ class TestCli:
         assert "Dinner" in captured.out
         assert "Created expense" in captured.out
 
-    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch(
+        "cli.participant_directory",
+        return_value=ParticipantDirectory(
+            id_to_name={"pid-1": "Baggie", "pid-2": "Neo"},
+            name_to_id={"baggie": "pid-1", "neo": "pid-2"},
+            currency="$",
+        ),
+    )
     @patch("cli.create_expense")
-    @patch("cli.get_spliit")
+    @patch("cli_target.get_spliit")
     def test_add_cmd(self, mock_get_spliit, mock_create_expense, mock_idname, capsys):
         client = MagicMock()
         mock_get_spliit.return_value = client
@@ -967,9 +1010,16 @@ class TestCli:
         assert "Added: Dinner" in captured.out
         assert "Split ($25.00 each): Baggie, Neo" in captured.out
 
-    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch(
+        "cli.participant_directory",
+        return_value=ParticipantDirectory(
+            id_to_name={"pid-1": "Baggie", "pid-2": "Neo"},
+            name_to_id={"baggie": "pid-1", "neo": "pid-2"},
+            currency="$",
+        ),
+    )
     @patch("cli.create_expense")
-    @patch("cli.get_spliit")
+    @patch("cli_target.get_spliit")
     def test_add_cmd_with_date(self, mock_get_spliit, mock_create_expense, mock_idname, capsys):
         client = MagicMock()
         mock_get_spliit.return_value = client
@@ -995,9 +1045,16 @@ class TestCli:
         )
         assert "Date: 2026-04-07T21:21+08:00" in captured.out
 
-    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch(
+        "cli.participant_directory",
+        return_value=ParticipantDirectory(
+            id_to_name={"pid-1": "Baggie", "pid-2": "Neo"},
+            name_to_id={"baggie": "pid-1", "neo": "pid-2"},
+            currency="$",
+        ),
+    )
     @patch("cli.create_expense")
-    @patch("cli.get_spliit")
+    @patch("cli_target.get_spliit")
     def test_add_cmd_with_invalid_date(
         self, mock_get_spliit, mock_create_expense, mock_idname, capsys
     ):
@@ -1020,7 +1077,7 @@ class TestCli:
 
     @patch("cli.get_activities", return_value=FAKE_ACTIVITIES[:1])
     @patch("cli.delete_expense")
-    @patch("cli.get_spliit", return_value=MagicMock())
+    @patch("cli_target.get_spliit", return_value=MagicMock())
     def test_undo_cmd(self, mock_get_spliit, mock_delete, mock_get, capsys):
         code = cli_undo_cmd(1, assume_yes=True, group_id="test-group")
 
@@ -1030,12 +1087,19 @@ class TestCli:
         assert "Undid:" in captured.out
         assert "Dinner" in captured.out
 
-    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch(
+        "cli.participant_directory",
+        return_value=ParticipantDirectory(
+            id_to_name={"pid-1": "Baggie", "pid-2": "Neo"},
+            name_to_id={"baggie": "pid-1", "neo": "pid-2"},
+            currency="$",
+        ),
+    )
     @patch(
         "cli.get_balances",
         return_value={"reimbursements": [{"from": "pid-1", "to": "pid-2", "amount": 1250}]},
     )
-    @patch("cli.get_spliit", return_value=MagicMock())
+    @patch("cli_target.get_spliit", return_value=MagicMock())
     def test_list_reimbursements(self, mock_get_spliit, mock_get, mock_idname, capsys):
         code = list_reimbursements("test-group")
 
@@ -1043,13 +1107,20 @@ class TestCli:
         assert code == 0
         assert "1. Baggie -> Neo ($12.50)" in captured.out
 
-    @patch("cli.id_to_name_map", return_value=({"pid-1": "Baggie", "pid-2": "Neo"}, "$"))
+    @patch(
+        "cli.participant_directory",
+        return_value=ParticipantDirectory(
+            id_to_name={"pid-1": "Baggie", "pid-2": "Neo"},
+            name_to_id={"baggie": "pid-1", "neo": "pid-2"},
+            currency="$",
+        ),
+    )
     @patch(
         "cli.get_balances",
         return_value={"reimbursements": [{"from": "pid-1", "to": "pid-2", "amount": 1250}]},
     )
     @patch("cli.settle_reimbursement")
-    @patch("cli.get_spliit", return_value=MagicMock())
+    @patch("cli_target.get_spliit", return_value=MagicMock())
     def test_mark_reimbursement_paid(
         self, mock_get_spliit, mock_settle, mock_get, mock_idname, capsys
     ):

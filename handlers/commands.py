@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import html
 import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from config import (
-    ALL_GROUP_IDS,
-    pending_deletes,
-    pending_settlements,
+from balance_views import (
+    format_balance_lines,
+    format_settlement_line,
+    format_settlement_option_label,
 )
+from command_args import parse_positive_count_arg
+from config import ALL_GROUP_IDS
 from constants import (
     CB_DEL_CANCEL,
     CB_DEL_CONFIRM,
@@ -20,26 +21,24 @@ from constants import (
     CB_SETTLE_CANCEL,
     PendingDelete,
     PendingSettlement,
-    format_money,
 )
 from domain import (
     format_activity_line_html,
-    group_picker_options,
-    id_to_name_map,
+    participant_directory,
     undoable_activity,
 )
+from group_resolution import require_group
+from group_selection import group_picker_options
 from helpers import (
-    group_picker_keyboard,
     is_allowed_chat,
     is_dm,
-    reimbursement_keyboard,
 )
+from keyboards import group_picker_keyboard, reimbursement_keyboard
+from pending_store import pending_deletes, pending_settlements
 from services import (
     get_activities,
     get_balances,
 )
-
-from .common import _parse_count_arg, _require_group
 
 logger = logging.getLogger(__name__)
 
@@ -70,31 +69,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    resolved = await _require_group(update, context.user_data, update.message)
+    resolved = await require_group(update, context.user_data, update.message)
     if not resolved:
         return
     group_id, client = resolved
 
     try:
-        id_name, currency = id_to_name_map(client)
+        directory = participant_directory(client)
         balance_data = get_balances(group_id)
         balances = balance_data["balances"]
         reimbursements = balance_data["reimbursements"]
 
         group = client.get_group()
-        lines = [f"**{group['name']}** Balances\n"]
-        for pid, data in balances.items():
-            name = id_name.get(pid, pid)
-            total = data["total"]
-            sign = "+" if total > 0 else ""
-            lines.append(f"- {name}: {sign}{format_money(total, currency)}")
-
-        if reimbursements:
-            lines.append("\n**Suggested Payments:**")
-            for r in reimbursements:
-                from_name = id_name.get(r["from"], r["from"])
-                to_name = id_name.get(r["to"], r["to"])
-                lines.append(f"- {from_name} -> {to_name}: {format_money(r['amount'], currency)}")
+        lines = format_balance_lines(group["name"], balances, reimbursements, directory)
 
         await update.message.reply_text(
             "\n".join(lines),
@@ -112,13 +99,13 @@ async def balance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    resolved = await _require_group(update, context.user_data, update.message)
+    resolved = await require_group(update, context.user_data, update.message)
     if not resolved:
         return
     group_id, _client = resolved
 
     try:
-        count = _parse_count_arg(context, 5)
+        count = parse_positive_count_arg(context, 5)
         if isinstance(count, str):
             await update.message.reply_text(
                 count,
@@ -154,13 +141,13 @@ async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message or not update.effective_user:
         return
-    resolved = await _require_group(update, context.user_data, update.message)
+    resolved = await require_group(update, context.user_data, update.message)
     if not resolved:
         return
     group_id, client = resolved
 
     try:
-        id_name, currency = id_to_name_map(client)
+        directory = participant_directory(client)
         balance_data = get_balances(group_id)
         reimbursements = balance_data["reimbursements"]
         if not reimbursements:
@@ -177,20 +164,14 @@ async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             from_id = reimbursement["from"]
             to_id = reimbursement["to"]
             amount = reimbursement["amount"]
-            from_name = html.escape(id_name.get(from_id, from_id))
-            to_name = html.escape(id_name.get(to_id, to_id))
             settlement_key = f"{key_prefix}_{index}"
             pending_settlements[settlement_key] = PendingSettlement(
                 from_id=from_id, to_id=to_id, amount=amount, group_id=group_id
             )
-            lines.append(
-                f"{index + 1}. <b>{from_name}</b> owes <b>{to_name}</b> "
-                f"{html.escape(format_money(amount, currency))}"
-            )
+            lines.append(format_settlement_line(index + 1, reimbursement, directory))
             options.append(
                 (
-                    f"{id_name.get(from_id, from_id)} -> {id_name.get(to_id, to_id)} "
-                    f"({format_money(amount, currency)})",
+                    format_settlement_option_label(reimbursement, directory),
                     f"{CB_SETTLE}{settlement_key}",
                 )
             )
@@ -214,13 +195,13 @@ async def settle_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    resolved = await _require_group(update, context.user_data, update.message)
+    resolved = await require_group(update, context.user_data, update.message)
     if not resolved:
         return
     group_id, _client = resolved
 
     try:
-        count = _parse_count_arg(context, 1)
+        count = parse_positive_count_arg(context, 1)
         if isinstance(count, str):
             await update.message.reply_text(
                 count,
@@ -281,7 +262,7 @@ async def undo_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def group_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not is_allowed_chat(update) or not update.message:
         return
-    resolved = await _require_group(update, context.user_data, update.message)
+    resolved = await require_group(update, context.user_data, update.message)
     if not resolved:
         return
     _group_id, client = resolved

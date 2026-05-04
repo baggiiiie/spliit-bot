@@ -1,5 +1,7 @@
 """Telegram bot command and callback handlers."""
 
+from group_resolution import resolve_group
+
 from .add_flow import (
     add_cmd,
     cancel_interactive,
@@ -22,7 +24,6 @@ from .commands import (
     switch_cmd,
     undo_cmd,
 )
-from .common import resolve_group
 
 __all__ = [
     "add_cmd",

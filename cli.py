@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, datetime
 
-from spliit import Spliit
-
-from config import get_spliit
+from balance_views import format_reimbursement_text, format_settlement_option_label
+from cli_target import resolve_cli_target
 from constants import format_money
-from domain import activity_label, activity_subject, id_to_name_map, undoable_activity
+from domain import (
+    activity_label,
+    format_activity_line_text,
+    participant_directory,
+    undoable_activity,
+)
+from expense_dates import normalize_expense_date
 from services import (
     create_expense,
     delete_expense,
@@ -18,21 +22,8 @@ from services import (
 )
 
 
-def _resolve_target(group_id: str | None) -> tuple[str, Spliit] | None:
-    if not group_id:
-        print("Missing required --spliit-group.", file=sys.stderr)
-        return None
-    return group_id, get_spliit(group_id)
-
-
-def _participant_maps(client: Spliit) -> tuple[dict[str, str], dict[str, str], str]:
-    id_name, currency = id_to_name_map(client)
-    name_id = {name.lower(): pid for pid, name in id_name.items()}
-    return id_name, name_id, currency
-
-
 def group_cmd(group_id: str | None = None) -> int:
-    resolved = _resolve_target(group_id)
+    resolved = resolve_cli_target(group_id)
     if not resolved:
         return 1
     _group_id, client = resolved
@@ -47,12 +38,12 @@ def group_cmd(group_id: str | None = None) -> int:
 
 
 def balance_cmd(group_id: str | None = None) -> int:
-    resolved = _resolve_target(group_id)
+    resolved = resolve_cli_target(group_id)
     if not resolved:
         return 1
     resolved_group_id, client = resolved
 
-    id_name, currency = id_to_name_map(client)
+    directory = participant_directory(client)
     balance_data = get_balances(resolved_group_id)
     balances = balance_data["balances"]
     reimbursements = balance_data["reimbursements"]
@@ -63,21 +54,21 @@ def balance_cmd(group_id: str | None = None) -> int:
     for pid, data in balances.items():
         total = data["total"]
         sign = "+" if total > 0 else ""
-        print(f"- {id_name.get(pid, pid)}: {sign}{format_money(total, currency)}")
+        print(
+            f"- {directory.participant_name(pid)}: {sign}{format_money(total, directory.currency)}"
+        )
 
     if reimbursements:
         print()
         print("Suggested payments:")
         for reimbursement in reimbursements:
-            from_name = id_name.get(reimbursement["from"], reimbursement["from"])
-            to_name = id_name.get(reimbursement["to"], reimbursement["to"])
-            print(f"- {from_name} -> {to_name}: {format_money(reimbursement['amount'], currency)}")
+            print(format_reimbursement_text(reimbursement, directory, prefix="- "))
 
     return 0
 
 
 def latest_cmd(limit: int, group_id: str | None = None) -> int:
-    resolved = _resolve_target(group_id)
+    resolved = resolve_cli_target(group_id)
     if not resolved:
         return 1
     resolved_group_id, _client = resolved
@@ -92,30 +83,9 @@ def latest_cmd(limit: int, group_id: str | None = None) -> int:
 
     print(f"Latest {len(activities)} activities")
     for index, activity in enumerate(activities, start=1):
-        label = activity_label(str(activity["activityType"]))
-        subject = activity_subject(activity)
-        print(f"{index}. {label}: {subject}")
+        print(format_activity_line_text(activity, index))
 
     return 0
-
-
-def _parse_expense_date(value: str) -> str:
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = f"{normalized[:-1]}+00:00"
-
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError as exc:
-        raise ValueError(
-            "Invalid --date. Use ISO 8601, e.g. 2026-04-07, "
-            "2026-04-07T21:21, or 2026-04-07T21:21+08:00."
-        ) from exc
-
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-
-    return parsed.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def add_cmd(
@@ -126,30 +96,28 @@ def add_cmd(
     group_id: str | None = None,
     expense_date: str | None = None,
 ) -> int:
-    resolved = _resolve_target(group_id)
+    resolved = resolve_cli_target(group_id)
     if not resolved:
         return 1
     _resolved_group_id, client = resolved
 
-    _, name_id, currency = _participant_maps(client)
-    payer_id = name_id.get(paid_by.lower())
+    directory = participant_directory(client)
+    payer_id = directory.participant_id(paid_by)
     if not payer_id:
         print(f"Unknown participant: {paid_by}", file=sys.stderr)
         return 1
 
-    payee_ids: list[tuple[str, int]] = []
-    unknown_names = [name for name in participants if name.lower() not in name_id]
+    unknown_names = directory.unknown_names(participants)
     if unknown_names:
         print(f"Unknown participant(s): {', '.join(unknown_names)}", file=sys.stderr)
         return 1
 
-    for name in participants:
-        payee_ids.append((name_id[name.lower()], 1))
+    payee_ids = [(payee_id, 1) for payee_id in directory.participant_ids(participants)]
 
     parsed_expense_date: str | None = None
     if expense_date:
         try:
-            parsed_expense_date = _parse_expense_date(expense_date)
+            parsed_expense_date = normalize_expense_date(expense_date)
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -164,16 +132,16 @@ def add_cmd(
     )
     share = amount / len(participants)
     print(f"Added: {title}")
-    print(f"Amount: {currency}{amount:.2f}")
+    print(f"Amount: {directory.currency}{amount:.2f}")
     if expense_date:
         print(f"Date: {expense_date}")
     print(f"Paid by: {paid_by}")
-    print(f"Split ({currency}{share:.2f} each): {', '.join(participants)}")
+    print(f"Split ({directory.currency}{share:.2f} each): {', '.join(participants)}")
     return 0
 
 
 def undo_cmd(index: int, assume_yes: bool, group_id: str | None = None) -> int:
-    resolved = _resolve_target(group_id)
+    resolved = resolve_cli_target(group_id)
     if not resolved:
         return 1
     resolved_group_id, _client = resolved
@@ -209,34 +177,30 @@ def undo_cmd(index: int, assume_yes: bool, group_id: str | None = None) -> int:
 
 
 def list_reimbursements(group_id: str | None = None) -> int:
-    resolved = _resolve_target(group_id)
+    resolved = resolve_cli_target(group_id)
     if not resolved:
         return 1
     resolved_group_id, client = resolved
 
-    id_name, _, currency = _participant_maps(client)
+    directory = participant_directory(client)
     reimbursements = get_balances(resolved_group_id)["reimbursements"]
     if not reimbursements:
         print("No suggested reimbursements.")
         return 0
 
     for index, reimbursement in enumerate(reimbursements, start=1):
-        from_name = id_name.get(reimbursement["from"], reimbursement["from"])
-        to_name = id_name.get(reimbursement["to"], reimbursement["to"])
-        print(
-            f"{index}. {from_name} -> {to_name} ({format_money(reimbursement['amount'], currency)})"
-        )
+        print(f"{index}. {format_settlement_option_label(reimbursement, directory)}")
 
     return 0
 
 
 def mark_reimbursement_paid(index: int, assume_yes: bool, group_id: str | None = None) -> int:
-    resolved = _resolve_target(group_id)
+    resolved = resolve_cli_target(group_id)
     if not resolved:
         return 1
     resolved_group_id, client = resolved
 
-    id_name, _, currency = _participant_maps(client)
+    directory = participant_directory(client)
     reimbursements = get_balances(resolved_group_id)["reimbursements"]
     if not reimbursements:
         print("No suggested reimbursements.")
@@ -250,20 +214,16 @@ def mark_reimbursement_paid(index: int, assume_yes: bool, group_id: str | None =
     from_id = reimbursement["from"]
     to_id = reimbursement["to"]
     amount = reimbursement["amount"]
-    from_name = id_name.get(from_id, from_id)
-    to_name = id_name.get(to_id, to_id)
-    amount_display = format_money(amount, currency)
+    settlement_display = format_settlement_option_label(reimbursement, directory)
 
     if not assume_yes:
-        response = input(
-            f"Mark as paid: {from_name} -> {to_name} ({amount_display})? [y/N] "
-        ).strip()
+        response = input(f"Mark as paid: {settlement_display}? [y/N] ").strip()
         if response.lower() not in {"y", "yes"}:
             print("Cancelled.")
             return 0
 
     settle_reimbursement(resolved_group_id, from_id, to_id, amount)
-    print(f"Marked as paid: {from_name} -> {to_name} ({amount_display})")
+    print(f"Marked as paid: {settlement_display}")
     return 0
 
 

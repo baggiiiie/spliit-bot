@@ -1,4 +1,4 @@
-"""Configuration, constants, and shared state."""
+"""Configuration and environment-backed settings."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ import os
 
 from dotenv import load_dotenv
 from spliit import Spliit
-
-from constants import PendingDelete, PendingExpense, PendingSettlement
 
 load_dotenv()
 
@@ -76,8 +74,3 @@ def get_spliit(group_id: str) -> Spliit:
 
 def get_group_id(chat_id: str) -> str | None:
     return GROUPS.get(chat_id)
-
-
-pending: dict[str, PendingExpense] = {}
-pending_deletes: dict[str, PendingDelete] = {}
-pending_settlements: dict[str, PendingSettlement] = {}
