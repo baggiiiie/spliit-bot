@@ -6,7 +6,7 @@ from telegram import Update
 
 from config import ADMIN_TELEGRAM_USER_ID, GROUPS_JSON_PATH
 from domain.registry import load_group_registry
-from telegram_bot.session import active_group_id
+from telegram_bot.session import Session
 
 
 def tg_display_name(update: Update) -> str:
@@ -22,7 +22,7 @@ def is_dm(update: Update) -> bool:
 
 def resolve_group_id(update: Update, user_data: dict | None = None) -> str | None:
     if is_dm(update):
-        return active_group_id(user_data)
+        return Session(user_data).active_group_id
     chat_id = str(update.effective_chat.id) if update.effective_chat else ""
     return load_group_registry(GROUPS_JSON_PATH).group_id(chat_id)
 

@@ -39,15 +39,6 @@ class PendingExpense:
     group_id: str
 
 
-class MissingExpenseField(StrEnum):
-    TITLE = "title"
-    AMOUNT = "amount"
-    PAYER = "payer"
-    PAYEES = "payees"
-    SPLIT_MODE = "split_mode"
-    READY = "ready"
-
-
 class IntakeField(StrEnum):
     TITLE = "title"
     AMOUNT = "amount"
@@ -110,19 +101,6 @@ class ExpenseDraft:
         reverse = self.id_to_name()
         return [reverse[pid] for pid in self.payee_ids]
 
-    def next_missing_field(self) -> MissingExpenseField:
-        if not self.title:
-            return MissingExpenseField.TITLE
-        if not self.amount:
-            return MissingExpenseField.AMOUNT
-        if not self.payer_id:
-            return MissingExpenseField.PAYER
-        if not self.payee_ids:
-            return MissingExpenseField.PAYEES
-        if not self.split_mode:
-            return MissingExpenseField.SPLIT_MODE
-        return MissingExpenseField.READY
-
     def confirm(
         self,
         split_mode: SplitMode,
@@ -162,7 +140,6 @@ class Ended:
 
 
 Outcome = NeedsInput | ReadyToConfirm | Rejected | Ended
-IntakeOutcome = Outcome
 _AMOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
 
@@ -244,110 +221,12 @@ def apply_split_values(draft: ExpenseDraft, text: str) -> Outcome:
 
 
 def next_prompt(draft: ExpenseDraft) -> Outcome:
-    match draft.next_missing_field():
-        case MissingExpenseField.TITLE:
-            return NeedsInput(IntakeField.TITLE)
-        case MissingExpenseField.AMOUNT:
-            return NeedsInput(IntakeField.AMOUNT)
-        case MissingExpenseField.PAYER:
-            return NeedsInput(IntakeField.PAYER)
-        case MissingExpenseField.PAYEES:
-            return NeedsInput(IntakeField.PAYEES)
-        case MissingExpenseField.SPLIT_MODE | MissingExpenseField.READY:
-            return NeedsInput(IntakeField.SPLIT_MODE)
-
-
-@dataclass(frozen=True, slots=True)
-class StartInput:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class LLMParsedExpenseInput:
-    expense: LLMParsedExpense
-    participants_map: dict[str, str]
-
-
-@dataclass(frozen=True, slots=True)
-class TitleInput:
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class AmountInput:
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class PayerInput:
-    payer_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class PayeeToggleInput:
-    payee_id: str
-
-
-@dataclass(frozen=True, slots=True)
-class PayeesToggleAllInput:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class PayeesDoneInput:
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class SplitModeInput:
-    raw_split_mode: str
-
-
-@dataclass(frozen=True, slots=True)
-class SplitValuesInput:
-    text: str
-
-
-DraftInput = (
-    StartInput
-    | LLMParsedExpenseInput
-    | TitleInput
-    | AmountInput
-    | PayerInput
-    | PayeeToggleInput
-    | PayeesToggleAllInput
-    | PayeesDoneInput
-    | SplitModeInput
-    | SplitValuesInput
-)
-
-
-async def apply(
-    draft: ExpenseDraft | None,
-    draft_input: DraftInput,
-) -> tuple[ExpenseDraft, Outcome]:
-    if isinstance(draft_input, StartInput):
-        return start_draft()
-    if isinstance(draft_input, LLMParsedExpenseInput):
-        return start_from_parsed(draft_input.expense, draft_input.participants_map)
-
-    assert draft is not None
-    if isinstance(draft_input, TitleInput):
-        outcome = apply_title(draft, draft_input.text)
-    elif isinstance(draft_input, AmountInput):
-        outcome = apply_amount(draft, draft_input.text)
-    elif isinstance(draft_input, PayerInput):
-        outcome = apply_payer(draft, draft_input.payer_id)
-    elif isinstance(draft_input, PayeeToggleInput):
-        outcome = toggle_payee(draft, draft_input.payee_id)
-    elif isinstance(draft_input, PayeesToggleAllInput):
-        outcome = toggle_all_payees(draft)
-    elif isinstance(draft_input, PayeesDoneInput):
-        outcome = complete_payees(draft)
-    elif isinstance(draft_input, SplitModeInput):
-        outcome = apply_split_mode(draft, draft_input.raw_split_mode)
-    elif isinstance(draft_input, SplitValuesInput):
-        outcome = apply_split_values(draft, draft_input.text)
-    else:
-        raise AssertionError("unreachable draft input")
-    return draft, outcome
+    if not draft.title:
+        return NeedsInput(IntakeField.TITLE)
+    if not draft.amount:
+        return NeedsInput(IntakeField.AMOUNT)
+    if not draft.payer_id:
+        return NeedsInput(IntakeField.PAYER)
+    if not draft.payee_ids:
+        return NeedsInput(IntakeField.PAYEES)
+    return NeedsInput(IntakeField.SPLIT_MODE)

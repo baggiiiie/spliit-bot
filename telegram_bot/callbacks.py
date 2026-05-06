@@ -25,7 +25,6 @@ from telegram_bot.session import (
     PendingExpense,
     PendingSettlement,
     Session,
-    set_active_group,
 )
 from telegram_bot.ui import (
     build_mention,
@@ -193,6 +192,5 @@ async def _select_group(
     if not is_dm(update):
         await reply_to_callback(query, "Use /switch in a DM.")
         return
-    assert context.user_data is not None
-    set_active_group(context.user_data, group_id)
+    Session(context.user_data, context.bot_data).active_group_id = group_id
     await reply_to_callback(query, f"Switched to: {group_name(group_id)}")

@@ -97,33 +97,3 @@ class Session:
         for key in list(actions):
             if key.startswith(prefix):
                 actions.pop(key, None)
-
-
-def active_group_id(user_data: dict | None) -> str | None:
-    return Session(user_data).active_group_id
-
-
-def set_active_group(user_data: dict, group_id: str) -> None:
-    Session(user_data).active_group_id = group_id
-
-
-def remember_pending_add(user_data: dict, text: str) -> None:
-    Session(user_data).pending_add_text = text
-
-
-def pop_pending_add(user_data: dict) -> str | None:
-    return Session(user_data).pop_pending_add_text()
-
-
-def get_draft(user_data: dict) -> ExpenseDraft:
-    draft = Session(user_data).draft
-    assert draft is not None
-    return draft
-
-
-def set_draft(user_data: dict, draft: ExpenseDraft) -> None:
-    Session(user_data).draft = draft
-
-
-def clear_draft(user_data: dict) -> None:
-    Session(user_data).draft = None

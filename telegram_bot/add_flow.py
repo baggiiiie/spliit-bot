@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
 
@@ -10,24 +9,24 @@ from telegram import CallbackQuery, Message, Update
 from telegram.ext import ContextTypes, ConversationHandler
 
 from domain.expense import (
-    AmountInput,
-    DraftInput,
     Ended,
-    NeedsInput,
+    ExpenseDraft,
     LLMParsedExpense,
-    LLMParsedExpenseInput,
+    NeedsInput,
+    Outcome,
     ParseFailure,
-    PayeesDoneInput,
-    PayeesToggleAllInput,
-    PayeeToggleInput,
-    PayerInput,
     ReadyToConfirm,
     Rejected,
-    SplitModeInput,
-    SplitValuesInput,
-    StartInput,
-    TitleInput,
-    apply,
+    apply_amount,
+    apply_payer,
+    apply_split_mode,
+    apply_split_values,
+    apply_title,
+    complete_payees,
+    start_draft,
+    start_from_parsed,
+    toggle_all_payees,
+    toggle_payee,
 )
 from llm.parser import parse_add_text
 from spliit_integration.gateway import gateway
@@ -62,8 +61,6 @@ from telegram_bot.ui import (
     split_values_retry_reply,
 )
 
-type TextInputBuilder = Callable[[str], DraftInput]
-type CallbackInputBuilder = Callable[[str], DraftInput]
 _FORMAT_HELP = "Format: `/add title, amount` or describe the expense in plain text."
 
 
@@ -132,59 +129,7 @@ def _parse_title_amount(text: str) -> LLMParsedExpense | None:
     return LLMParsedExpense(title=title, amount=parsed_amount)
 
 
-async def _input_from_text(ctx: AddContext, text: str) -> DraftInput | ConversationReply:
-    participants_map = gateway.group(ctx.group_id).directory.participants_map
-    if parsed_title_amount := _parse_title_amount(text):
-        return LLMParsedExpenseInput(parsed_title_amount, participants_map)
-    parsed = await parse_add_text(text, list(participants_map))
-    if isinstance(parsed, ParseFailure):
-        assert ctx.message.from_user is not None
-        await notify_admin_llm_error(
-            ctx.context, ctx.message.from_user, text, parsed.user_message, parsed.raw_response
-        )
-        return ConversationReply(
-            ConversationHandler.END,
-            (MessageAction(parsed.user_message, parse_mode="Markdown"),),
-        )
-    if parsed is None:
-        return ConversationReply(
-            ConversationHandler.END,
-            (MessageAction(_FORMAT_HELP, parse_mode="Markdown"),),
-        )
-    return LLMParsedExpenseInput(parsed, participants_map)
-
-
-async def step(ctx: AddContext, draft_input: DraftInput) -> ConversationReply:
-    try:
-        if isinstance(draft_input, (StartInput, LLMParsedExpenseInput)):
-            draft, outcome = await apply(None, draft_input)
-        else:
-            draft = ctx.session.draft
-            assert draft is not None
-            draft, outcome = await apply(draft, draft_input)
-    except Exception as error:
-        return error_reply(error)
-
-    ctx.session.draft = draft
-
-    if isinstance(outcome, Rejected):
-        if isinstance(draft_input, AmountInput):
-            return invalid_amount_reply(outcome.user_message)
-        if isinstance(draft_input, SplitValuesInput):
-            return split_values_retry_reply(outcome.user_message)
-        if isinstance(draft_input, PayeesDoneInput) and ctx.query is not None:
-            return ConversationReply(PAYEES, (MessageAction(outcome.user_message, alert=True),))
-        return ConversationReply(
-            ConversationHandler.END,
-            (MessageAction(outcome.user_message, parse_mode="Markdown"),),
-        )
-
-    if isinstance(draft_input, AmountInput):
-        try:
-            draft.participants_map = gateway.group(ctx.group_id).directory.participants_map
-        except Exception as error:
-            return error_reply(error)
-
+def _outcome_to_reply(ctx: AddContext, draft: ExpenseDraft, outcome: Outcome) -> ConversationReply:
     if isinstance(outcome, NeedsInput):
         return expense_prompt_reply(draft, outcome.field, edit=ctx.query is not None)
     if isinstance(outcome, Ended):
@@ -196,8 +141,7 @@ async def step(ctx: AddContext, draft_input: DraftInput) -> ConversationReply:
         return ConversationReply(ConversationHandler.END)
     if isinstance(outcome, ReadyToConfirm):
         try:
-            ctx.session.draft = None
-            return expense_confirmation_reply(
+            reply = expense_confirmation_reply(
                 draft=draft,
                 key=f"{ctx.user_id}_{ctx.message.message_id}",
                 tg_name=ctx.tg_name,
@@ -209,21 +153,48 @@ async def step(ctx: AddContext, draft_input: DraftInput) -> ConversationReply:
             )
         except Exception as error:
             return error_reply(error)
+        ctx.session.draft = None
+        return reply
     raise AssertionError("unreachable add outcome")
 
 
-async def _run_step(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    draft_input: DraftInput,
-    *,
-    group_id: str | None = None,
-    query: CallbackQuery | None = None,
-    message: Message | None = None,
-) -> int:
-    add_ctx = _add_context(update, context, group_id=group_id, query=query, message=message)
-    reply = await step(add_ctx, draft_input)
-    return await reply.deliver(query, add_ctx.message)
+async def _deliver_outcome(ctx: AddContext, draft: ExpenseDraft, outcome: Outcome) -> int:
+    ctx.session.draft = draft
+    return await _outcome_to_reply(ctx, draft, outcome).deliver(ctx.query, ctx.message)
+
+
+async def _deliver(ctx: AddContext, reply: ConversationReply) -> int:
+    return await reply.deliver(ctx.query, ctx.message)
+
+
+async def _enter_with_text(ctx: AddContext, text: str) -> int:
+    participants_map = gateway.group(ctx.group_id).directory.participants_map
+    if parsed_title_amount := _parse_title_amount(text):
+        draft, outcome = start_from_parsed(parsed_title_amount, participants_map)
+        return await _deliver_outcome(ctx, draft, outcome)
+    parsed = await parse_add_text(text, list(participants_map))
+    if isinstance(parsed, ParseFailure):
+        assert ctx.message.from_user is not None
+        await notify_admin_llm_error(
+            ctx.context, ctx.message.from_user, text, parsed.user_message, parsed.raw_response
+        )
+        return await _deliver(
+            ctx,
+            ConversationReply(
+                ConversationHandler.END,
+                (MessageAction(parsed.user_message, parse_mode="Markdown"),),
+            ),
+        )
+    if parsed is None:
+        return await _deliver(
+            ctx,
+            ConversationReply(
+                ConversationHandler.END,
+                (MessageAction(_FORMAT_HELP, parse_mode="Markdown"),),
+            ),
+        )
+    draft, outcome = start_from_parsed(parsed, participants_map)
+    return await _deliver_outcome(ctx, draft, outcome)
 
 
 async def enter_add_with_text(
@@ -233,35 +204,104 @@ async def enter_add_with_text(
     *,
     group_id: str,
 ) -> int:
-    add_ctx = _add_context(update, context, group_id=group_id)
-    draft_input = await _input_from_text(add_ctx, text.strip())
-    if isinstance(draft_input, ConversationReply):
-        return await draft_input.deliver(None, add_ctx.message)
-    return await _run_step(update, context, draft_input, group_id=group_id)
+    ctx = _add_context(update, context, group_id=group_id)
+    return await _enter_with_text(ctx, text.strip())
 
 
-def _message_handler(build_input: TextInputBuilder):
-    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        assert update.message and update.message.text
-        return await _run_step(update, context, build_input(update.message.text))
-
-    return handler
+def _require_draft(ctx: AddContext) -> ExpenseDraft:
+    draft = ctx.session.draft
+    assert draft is not None
+    return draft
 
 
-def _callback_handler(prefix: str, build_input: CallbackInputBuilder):
-    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        query = update.callback_query
-        assert query and query.data
-        return await _run_step(update, context, build_input(query.data[len(prefix) :]), query=query)
+async def interactive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message and update.message.text
+    ctx = _add_context(update, context)
+    draft = _require_draft(ctx)
+    try:
+        outcome = apply_title(draft, update.message.text)
+    except Exception as error:
+        return await _deliver(ctx, error_reply(error))
+    return await _deliver_outcome(ctx, draft, outcome)
 
-    return handler
+
+async def interactive_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message and update.message.text
+    ctx = _add_context(update, context)
+    draft = _require_draft(ctx)
+    try:
+        outcome = apply_amount(draft, update.message.text)
+    except Exception as error:
+        return await _deliver(ctx, error_reply(error))
+    if isinstance(outcome, Rejected):
+        ctx.session.draft = draft
+        return await _deliver(ctx, invalid_amount_reply(outcome.user_message))
+    try:
+        draft.participants_map = gateway.group(ctx.group_id).directory.participants_map
+    except Exception as error:
+        return await _deliver(ctx, error_reply(error))
+    return await _deliver_outcome(ctx, draft, outcome)
 
 
-interactive_title = _message_handler(TitleInput)
-interactive_amount = _message_handler(AmountInput)
-interactive_payer = _callback_handler(CB_PAYER, PayerInput)
-interactive_split_mode = _callback_handler(CB_SPLIT_MODE, SplitModeInput)
-interactive_split_values = _message_handler(SplitValuesInput)
+async def interactive_payer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    assert query and query.data
+    ctx = _add_context(update, context, query=query)
+    draft = _require_draft(ctx)
+    try:
+        outcome = apply_payer(draft, query.data[len(CB_PAYER) :])
+    except Exception as error:
+        return await _deliver(ctx, error_reply(error))
+    return await _deliver_outcome(ctx, draft, outcome)
+
+
+async def interactive_split_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    assert query and query.data
+    ctx = _add_context(update, context, query=query)
+    draft = _require_draft(ctx)
+    try:
+        outcome = apply_split_mode(draft, query.data[len(CB_SPLIT_MODE) :])
+    except Exception as error:
+        return await _deliver(ctx, error_reply(error))
+    return await _deliver_outcome(ctx, draft, outcome)
+
+
+async def interactive_split_values(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    assert update.message and update.message.text
+    ctx = _add_context(update, context)
+    draft = _require_draft(ctx)
+    try:
+        outcome = apply_split_values(draft, update.message.text)
+    except Exception as error:
+        return await _deliver(ctx, error_reply(error))
+    if isinstance(outcome, Rejected):
+        ctx.session.draft = draft
+        return await _deliver(ctx, split_values_retry_reply(outcome.user_message))
+    return await _deliver_outcome(ctx, draft, outcome)
+
+
+async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    assert query and query.data
+    ctx = _add_context(update, context, query=query)
+    draft = _require_draft(ctx)
+    try:
+        if query.data == CB_PAYEE_DONE:
+            outcome = complete_payees(draft)
+            if isinstance(outcome, Rejected):
+                ctx.session.draft = draft
+                return await _deliver(
+                    ctx,
+                    ConversationReply(PAYEES, (MessageAction(outcome.user_message, alert=True),)),
+                )
+        elif query.data == f"{CB_PAYEE}{CB_PAYEE_ALL}":
+            outcome = toggle_all_payees(draft)
+        else:
+            outcome = toggle_payee(draft, query.data[len(CB_PAYEE) :])
+    except Exception as error:
+        return await _deliver(ctx, error_reply(error))
+    return await _deliver_outcome(ctx, draft, outcome)
 
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | None:
@@ -291,21 +331,10 @@ async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int | N
 
     payload = _command_payload(update.message.text or "")
     if payload is None:
-        return await _run_step(update, context, StartInput(), group_id=group_id)
+        ctx = _add_context(update, context, group_id=group_id)
+        draft, outcome = start_draft()
+        return await _deliver_outcome(ctx, draft, outcome)
     return await enter_add_with_text(update, context, payload, group_id=group_id)
-
-
-async def interactive_payees(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    assert query and query.data
-    draft_input: DraftInput
-    if query.data == CB_PAYEE_DONE:
-        draft_input = PayeesDoneInput()
-    elif query.data == f"{CB_PAYEE}{CB_PAYEE_ALL}":
-        draft_input = PayeesToggleAllInput()
-    else:
-        draft_input = PayeeToggleInput(query.data[len(CB_PAYEE) :])
-    return await _run_step(update, context, draft_input, query=query)
 
 
 async def cancel_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -336,11 +365,9 @@ async def interactive_select_group(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     await query.edit_message_text(f"Group: {label}")
     message = cast(Message, query.message)
+    ctx = _add_context(update, context, group_id=group_id, message=message)
     payload = _command_payload(pending_add_text)
     if payload is None:
-        return await _run_step(update, context, StartInput(), group_id=group_id, message=message)
-    add_ctx = _add_context(update, context, group_id=group_id, message=message)
-    draft_input = await _input_from_text(add_ctx, payload)
-    if isinstance(draft_input, ConversationReply):
-        return await draft_input.deliver(None, message)
-    return await _run_step(update, context, draft_input, group_id=group_id, message=message)
+        draft, outcome = start_draft()
+        return await _deliver_outcome(ctx, draft, outcome)
+    return await _enter_with_text(ctx, payload)

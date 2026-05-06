@@ -176,12 +176,15 @@ class _FakeAsyncClient:
 
 class TestExpenseConfirmation:
     def test_builds_pending_expense_without_storing_it(self):
+        from telegram_bot.session import PENDING_ACTIONS_KEY
+
         draft = ExpenseDraft.with_participants({"Baggie": "pid-1", "Neo": "pid-2", "Yoga": "pid-3"})
         draft.title = "Dinner"
         draft.amount = 42.5
         draft.set_payer_id("pid-1")
         draft.payee_ids = ["pid-1", "pid-2"]
 
+        bot_data: dict = {}
         confirmation = build_expense_confirmation(
             draft,
             key="confirm-key",
@@ -195,6 +198,7 @@ class TestExpenseConfirmation:
         assert confirmation.pending_expense.expense.title == "Dinner"
         assert confirmation.pending_expense.expense.amount_cents == 4250
         assert confirmation.pending_expense.expense.paid_for == [("pid-1", 1), ("pid-2", 1)]
+        assert PENDING_ACTIONS_KEY not in bot_data
 
 
 class TestParseWithLLMRetries:
