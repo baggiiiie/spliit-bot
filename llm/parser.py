@@ -10,6 +10,7 @@ from functools import cache
 from pathlib import Path
 
 import httpx
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from config import GROQ_API_BASE_URL, GROQ_API_KEY, GROQ_MODEL
 from domain.expense import LLMParsedExpense, ParseFailure
@@ -28,6 +29,39 @@ _PAYER_SIGNAL_RE = re.compile(
     r"\b(paid|paying|covered|covering|bought|buying|spent|spending|fronted|fronting)\b",
     re.IGNORECASE,
 )
+
+
+class LLMExpenseResponse(BaseModel):
+    """Validated JSON shape requested from the LLM."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str | None = None
+    amount: float | None = None
+    payer: str | None = None
+    participants: list[str] | None = None
+    error: str | None = None
+
+    @field_validator("amount", mode="after")
+    @classmethod
+    def _non_positive_amount_to_none(cls, value: float | None) -> float | None:
+        if value is not None and value <= 0:
+            return None
+        return value
+
+    @field_validator("title", "payer", "error", mode="before")
+    @classmethod
+    def _blank_string_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("participants", mode="before")
+    @classmethod
+    def _empty_participants_to_none(cls, value: object) -> object:
+        if value == []:
+            return None
+        return value
 
 
 @cache
@@ -99,7 +133,7 @@ async def parse_with_llm(
     try:
         if not GROQ_API_KEY:
             logger.error("GROQ_API_KEY is not set")
-            return ParseFailure(_LLM_ERROR_MSG), None
+            return ParseFailure(user_message=_LLM_ERROR_MSG), None
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = None
@@ -143,58 +177,62 @@ async def parse_with_llm(
         assert resp is not None
         if resp.status_code >= 400:
             logger.error("Groq API error: %s %s", resp.status_code, resp.text)
-            return ParseFailure(_LLM_ERROR_MSG, resp.text), resp.text
+            return ParseFailure(user_message=_LLM_ERROR_MSG, raw_response=resp.text), resp.text
 
         payload = resp.json()
         raw_response = payload.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
         json_match = re.search(r"\{[^}]+\}", raw_response)
         if not json_match:
-            return ParseFailure(_REJECTED_MSG, raw_response), raw_response
-        data = json.loads(json_match.group())
+            return ParseFailure(user_message=_REJECTED_MSG, raw_response=raw_response), raw_response
+        llm_data = LLMExpenseResponse.model_validate_json(json_match.group())
 
-        if "error" in data:
-            return ParseFailure(_NOT_UNDERSTOOD_MSG, raw_response), raw_response
+        if llm_data.error:
+            return ParseFailure(
+                user_message=_NOT_UNDERSTOOD_MSG, raw_response=raw_response
+            ), raw_response
 
         known_lower = {n.lower(): n for n in participant_names}
 
-        amount = data.get("amount")
-        payer = data.get("payer")
-        participants = data.get("participants")
-
         matched_payer = (
-            known_lower[payer.lower()]
-            if isinstance(payer, str) and payer.lower() in known_lower
+            known_lower[llm_data.payer.lower()]
+            if llm_data.payer and llm_data.payer.lower() in known_lower
             else None
         )
         if matched_payer and not _has_explicit_payer_signal(text):
             matched_payer = None
         matched_payees = (
-            [known_lower[p.lower()].lower() for p in participants if p.lower() in known_lower]
-            if isinstance(participants, list) and participants
+            [
+                known_lower[p.lower()].lower()
+                for p in llm_data.participants
+                if p.lower() in known_lower
+            ]
+            if llm_data.participants
             else None
         ) or None
 
         parsed = LLMParsedExpense(
-            title=data.get("title") or None,
-            amount=float(amount) if isinstance(amount, (int, float)) and amount > 0 else None,
+            title=llm_data.title,
+            amount=llm_data.amount,
             payer=matched_payer,
             participants=matched_payees,
         )
 
         if not parsed.title and not parsed.amount and not parsed.payer and not parsed.participants:
-            return ParseFailure(_NOT_UNDERSTOOD_MSG, raw_response), raw_response
+            return ParseFailure(
+                user_message=_NOT_UNDERSTOOD_MSG, raw_response=raw_response
+            ), raw_response
 
         return parsed, raw_response
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
+    except (json.JSONDecodeError, KeyError, TypeError, ValidationError) as e:
         logger.error("LLM JSON parse failed: %s", e)
-        return ParseFailure(_REJECTED_MSG, raw_response), raw_response
+        return ParseFailure(user_message=_REJECTED_MSG, raw_response=raw_response), raw_response
     except httpx.TimeoutException:
         logger.error("Groq request timed out")
-        return ParseFailure(_LLM_ERROR_MSG), None
+        return ParseFailure(user_message=_LLM_ERROR_MSG), None
     except httpx.HTTPError as e:
         logger.error("Groq request failed: %s", e)
-        return ParseFailure(_LLM_ERROR_MSG), None
+        return ParseFailure(user_message=_LLM_ERROR_MSG), None
     except Exception as e:
         logger.error("LLM parse failed: %s", e)
-        return ParseFailure(_LLM_ERROR_MSG, raw_response), raw_response
+        return ParseFailure(user_message=_LLM_ERROR_MSG, raw_response=raw_response), raw_response

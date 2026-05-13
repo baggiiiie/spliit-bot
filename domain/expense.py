@@ -6,19 +6,23 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from pydantic import BaseModel, ConfigDict
+
 from domain.split import PaidFor, SplitMode, parse_split_values
 
 
-@dataclass(frozen=True, slots=True)
-class LLMParsedExpense:
+class LLMParsedExpense(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     title: str | None = None
     amount: float | None = None
     payer: str | None = None
     participants: list[str] | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class ParseFailure:
+class ParseFailure(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     user_message: str
     raw_response: str | None = None
 
