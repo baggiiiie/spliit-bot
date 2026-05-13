@@ -150,28 +150,37 @@ class TestPromptTemplate:
         assert "lunch 50" in result
 
 
-class _FakeLLMResponse:
-    def __init__(self, status_code: int, payload: dict | None = None, text: str = ""):
-        self.status_code = status_code
-        self._payload = payload or {}
-        self.text = text
-
-    def json(self) -> dict:
-        return self._payload
+class _FakeCompletionMessage:
+    def __init__(self, content: str):
+        self.content = content
 
 
-class _FakeAsyncClient:
-    def __init__(self, responses: list[_FakeLLMResponse]):
+class _FakeCompletionChoice:
+    def __init__(self, content: str):
+        self.message = _FakeCompletionMessage(content)
+
+
+class _FakeCompletion:
+    def __init__(self, content: str):
+        self.choices = [_FakeCompletionChoice(content)]
+
+
+class _FakeInstructorCompletions:
+    def __init__(self, responses: list[tuple[object, _FakeCompletion]]):
         self._responses = responses
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    async def post(self, *args, **kwargs):
+    async def create_with_completion(self, *args, **kwargs):
         return self._responses.pop(0)
+
+
+class _FakeInstructorChat:
+    def __init__(self, responses: list[tuple[object, _FakeCompletion]]):
+        self.completions = _FakeInstructorCompletions(responses)
+
+
+class _FakeInstructorClient:
+    def __init__(self, responses: list[tuple[object, _FakeCompletion]]):
+        self.chat = _FakeInstructorChat(responses)
 
 
 class TestExpenseConfirmation:
@@ -201,41 +210,25 @@ class TestExpenseConfirmation:
         assert PENDING_ACTIONS_KEY not in bot_data
 
 
-class TestParseWithLLMRetries:
-    def test_rate_limit_retries_then_succeeds(self):
+class TestParseWithInstructor:
+    def test_parses_structured_response(self):
         import llm.parser as parsing
 
+        raw = '{"title":"Lunch","amount":12.5,"payer":"Baggie","participants":["Baggie","Neo"]}'
         responses = [
-            _FakeLLMResponse(
-                429,
-                text=(
-                    '{"error":{"message":"Rate limit reached. '
-                    'Please try again in 1.25s.","code":"rate_limit_exceeded"}}'
+            (
+                parsing.LLMExpenseResponse(
+                    title="Lunch", amount=12.5, payer="Baggie", participants=["Baggie", "Neo"]
                 ),
-            ),
-            _FakeLLMResponse(
-                200,
-                payload={
-                    "choices": [
-                        {
-                            "message": {
-                                "content": (
-                                    '{"title":"Lunch","amount":12.5,'
-                                    '"payer":"Baggie","participants":["Baggie","Neo"]}'
-                                )
-                            }
-                        }
-                    ]
-                },
-            ),
+                _FakeCompletion(raw),
+            )
         ]
 
         with (
             patch.object(parsing, "GROQ_API_KEY", "test-key"),
-            patch.object(parsing.httpx, "AsyncClient", return_value=_FakeAsyncClient(responses)),
-            patch.object(parsing.asyncio, "sleep", new=AsyncMock()) as sleep_mock,
+            patch.object(parsing, "from_groq", return_value=_FakeInstructorClient(responses)),
         ):
-            result, raw = asyncio.run(
+            result, raw_response = asyncio.run(
                 parse_with_llm("baggie paid lunch 12.5 split with neo", PARTICIPANTS)
             )
 
@@ -244,34 +237,23 @@ class TestParseWithLLMRetries:
         assert result.amount == 12.5
         assert result.payer == "Baggie"
         assert result.participants == ["baggie", "neo"]
-        sleep_mock.assert_awaited_once_with(1.25)
-        assert raw is not None
-        assert "Lunch" in raw
+        assert raw_response == raw
 
     def test_clears_inferred_payer_without_explicit_payer_signal(self):
         import llm.parser as parsing
 
         responses = [
-            _FakeLLMResponse(
-                200,
-                payload={
-                    "choices": [
-                        {
-                            "message": {
-                                "content": (
-                                    '{"title":"movie","amount":28,'
-                                    '"payer":"Neo","participants":["Neo","Yoga"]}'
-                                )
-                            }
-                        }
-                    ]
-                },
+            (
+                parsing.LLMExpenseResponse(
+                    title="movie", amount=28, payer="Neo", participants=["Neo", "Yoga"]
+                ),
+                _FakeCompletion(""),
             )
         ]
 
         with (
             patch.object(parsing, "GROQ_API_KEY", "test-key"),
-            patch.object(parsing.httpx, "AsyncClient", return_value=_FakeAsyncClient(responses)),
+            patch.object(parsing, "from_groq", return_value=_FakeInstructorClient(responses)),
         ):
             result, _ = asyncio.run(parse_with_llm("movie 28 shared by neo and yoga", PARTICIPANTS))
 
@@ -283,26 +265,17 @@ class TestParseWithLLMRetries:
         import llm.parser as parsing
 
         responses = [
-            _FakeLLMResponse(
-                200,
-                payload={
-                    "choices": [
-                        {
-                            "message": {
-                                "content": (
-                                    '{"title":"fries","amount":6.5,'
-                                    '"payer":"Neo","participants":["Neo","Ricky"]}'
-                                )
-                            }
-                        }
-                    ]
-                },
+            (
+                parsing.LLMExpenseResponse(
+                    title="fries", amount=6.5, payer="Neo", participants=["Neo", "Ricky"]
+                ),
+                _FakeCompletion(""),
             )
         ]
 
         with (
             patch.object(parsing, "GROQ_API_KEY", "test-key"),
-            patch.object(parsing.httpx, "AsyncClient", return_value=_FakeAsyncClient(responses)),
+            patch.object(parsing, "from_groq", return_value=_FakeInstructorClient(responses)),
         ):
             result, _ = asyncio.run(
                 parse_with_llm("neo bought fries 6.5 for neo + ricky", PARTICIPANTS)
